@@ -16,6 +16,12 @@ const LEAD = 14;
 const STREAK_WIDTH = 0.012;
 const FADE_START = 22;
 const FADE_END = 34;
+/** Streaks fade out over this many metres towards the volume's faces, where they wrap round. */
+const EDGE_FADE_SIDE = 3;
+/** Drops reappear at the top, so it fades over a longer distance than the bottom. */
+const EDGE_FADE_TOP = 4;
+/** Kept short so drops still reach the road while the chase camera sits a few metres up. */
+const EDGE_FADE_BOTTOM = 1.5;
 const RAIN_COLOUR = '#8fbfe0';
 const RAIN_OPACITY = 0.55;
 /** Higher values let the streak stretch follow camera speed changes faster. */
@@ -31,6 +37,9 @@ const STREAK_VERTEX = /* glsl */ `
   uniform float uWidth;
   uniform vec2 uResolution;
   uniform vec2 uFade;
+  uniform vec3 uEdgeFadeLow;
+  uniform vec3 uEdgeFadeHigh;
+  uniform float uFogDensity;
 
   attribute vec4 aSeed;
 
@@ -41,16 +50,16 @@ const STREAK_VERTEX = /* glsl */ `
   void main() {
     // Each drop is fixed in world space; the volume only decides which wrapped copy is drawn.
     vec3 boxMin = uCentre - 0.5 * uBox;
-    vec3 head = boxMin + mod(aSeed.xyz * uBox + uOffset - boxMin, uBox);
+    vec3 local = mod(aSeed.xyz * uBox + uOffset - boxMin, uBox);
+    vec3 head = boxMin + local;
 
     float speed = length(uVelocity);
     vec3 direction = speed > 0.001 ? uVelocity / speed : vec3(0.0, -1.0, 0.0);
     float streak = min(uMaxLength, speed * uShutter) * (0.7 + 0.6 * aSeed.w);
     vec3 tail = head - direction * streak;
 
-    mat4 viewProjection = projectionMatrix * viewMatrix;
-    vec4 clipHead = viewProjection * vec4(head, 1.0);
-    vec4 clipTail = viewProjection * vec4(tail, 1.0);
+    vec4 clipHead = projectionMatrix * (viewMatrix * vec4(head, 1.0));
+    vec4 clipTail = projectionMatrix * (viewMatrix * vec4(tail, 1.0));
     if (clipHead.w < 0.2 || clipTail.w < 0.2) {
       gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
       vAlpha = 0.0;
@@ -74,7 +83,12 @@ const STREAK_VERTEX = /* glsl */ `
     float coverage = clamp(pixelWidth, 0.35, 1.0);
     float farFade = 1.0 - smoothstep(uFade.x, uFade.y, distanceToCamera);
     float nearFade = smoothstep(0.3, 1.5, distanceToCamera);
-    vAlpha = coverage * farFade * nearFade * (0.6 + 0.6 * aSeed.w);
+    // Drops wrap from the bottom of the volume to its top (and across its sides); fading every
+    // face hides them popping in, even when the orbit camera looks straight up.
+    vec3 edge = smoothstep(vec3(0.0), uEdgeFadeLow, local) * smoothstep(vec3(0.0), uEdgeFadeHigh, uBox - local);
+    float fogDepth = uFogDensity * distanceToCamera;
+    float fog = exp(-fogDepth * fogDepth);
+    vAlpha = coverage * farFade * nearFade * edge.x * edge.y * edge.z * fog * (0.6 + 0.6 * aSeed.w);
     vAlong = position.y;
     vSide = position.x;
   }
@@ -134,6 +148,9 @@ export class RainSystem implements GameSystem {
       uWidth: { value: STREAK_WIDTH },
       uResolution: { value: new T.Vector2(1, 1) },
       uFade: { value: new T.Vector2(FADE_START, FADE_END) },
+      uEdgeFadeLow: { value: new T.Vector3(EDGE_FADE_SIDE, EDGE_FADE_BOTTOM, EDGE_FADE_SIDE) },
+      uEdgeFadeHigh: { value: new T.Vector3(EDGE_FADE_SIDE, EDGE_FADE_TOP, EDGE_FADE_SIDE) },
+      uFogDensity: { value: 0 },
       uColour: { value: new T.Color(RAIN_COLOUR) },
       uOpacity: { value: RAIN_OPACITY },
       uFlash: { value: 0 },
@@ -196,6 +213,7 @@ export class RainSystem implements GameSystem {
     uniforms.uOffset.value.set(this.driftX, -this.fallen, this.driftZ);
     uniforms.uVelocity.value.set(weather.windX, -fall, weather.windZ).sub(this.cameraVelocity);
     uniforms.uFlash.value = weather.lightning;
+    uniforms.uFogDensity.value = weather.fogDensity;
     if (this.renderer) this.renderer.getDrawingBufferSize(uniforms.uResolution.value);
 
     this.splashes.update(dt, frame, this.forward);

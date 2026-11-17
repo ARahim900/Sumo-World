@@ -72,6 +72,8 @@ interface Drop {
 
 type LensMesh = T.Mesh<T.InstancedBufferGeometry, T.ShaderMaterial>;
 
+const isActive = (drop: Drop): boolean => drop.active;
+
 /**
  * Raindrops sitting on the camera lens: a handful of clip-space quads, so the cost is a
  * single tiny draw call. Off on the low preset and whenever no rain is falling.
@@ -94,6 +96,8 @@ export class LensDrops {
   });
   private readonly mesh: LensMesh;
   private spawnDebt = 0;
+  /** True when no drop is active and the uploaded buffer already reflects that. */
+  private idle = true;
   private scene?: T.Scene;
 
   constructor() {
@@ -106,6 +110,7 @@ export class LensDrops {
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = RENDER_ORDER;
     this.mesh.name = 'lens-drops';
+    this.mesh.visible = false;
     for (let i = 0; i < MAX_DROPS; i++) {
       this.drops.push({ active: false, x: 0, y: 0, radius: 0, age: 0, life: 0, cling: 0, vx: 0, vy: 0 });
     }
@@ -135,6 +140,9 @@ export class LensDrops {
       this.spawn();
     }
 
+    // With no drop on the lens the buffer already holds all-zero alphas: skip the upload.
+    if (this.idle && !this.drops.some(isActive)) return;
+
     let visible = false;
     for (let i = 0; i < MAX_DROPS; i++) {
       const drop = this.drops[i];
@@ -148,6 +156,7 @@ export class LensDrops {
     }
     this.attribute.needsUpdate = true;
     this.mesh.visible = visible;
+    this.idle = !this.drops.some(isActive);
   }
 
   dispose(): void {
@@ -199,11 +208,12 @@ export class LensDrops {
   }
 
   private clear(): void {
-    if (!this.mesh.visible) return;
+    if (this.idle) return;
     for (const drop of this.drops) drop.active = false;
     this.data.fill(0);
     this.attribute.needsUpdate = true;
     this.mesh.visible = false;
     this.spawnDebt = 0;
+    this.idle = true;
   }
 }

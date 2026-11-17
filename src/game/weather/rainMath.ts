@@ -33,3 +33,17 @@ export function lensSpawnRate(density: number, speed: number): number {
   if (density <= 0) return 0;
   return 1.4 * density * (1 + Math.min(speed, 40) * 0.04);
 }
+
+/** Base seconds one ground splash lasts before its slot lands somewhere new. */
+export const SPLASH_PERIOD = 0.45;
+/**
+ * Each splash slot lasts SPLASH_PERIOD × n / 8 for one whole n in this inclusive range, so
+ * lifetimes vary between 0.75× and 1.25× the base period.
+ */
+export const SPLASH_PERIOD_EIGHTHS: readonly [number, number] = [6, 10];
+/**
+ * The splash clock wraps after this many seconds to keep float precision in long sessions.
+ * 2520 is divisible by every n in SPLASH_PERIOD_EIGHTHS, so each slot completes a whole
+ * number of cycles before the wrap and no ring restarts or jumps when it happens.
+ */
+export const SPLASH_CLOCK_WRAP = SPLASH_PERIOD * 2520;

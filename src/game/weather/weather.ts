@@ -108,8 +108,8 @@ export class WeatherSystem implements GameSystem {
   private applyAtmosphere(scene: T.Scene): void {
     const state = this.model.state;
     const flash = state.lightning;
-    const [r, g, b] = this.model.fogColour;
-    this.fogTint.setRGB(r, g, b, T.SRGBColorSpace);
+    const fogColour = this.model.fogColour;
+    this.fogTint.setRGB(fogColour[0], fogColour[1], fogColour[2], T.SRGBColorSpace);
 
     if (this.hasFog && scene.fog) {
       scene.fog.color.copy(this.fogTint);

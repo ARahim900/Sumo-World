@@ -42,6 +42,12 @@ const AUTO_HOLD: Record<WeatherKind, readonly [number, number]> = {
   fog: [40, 80],
 };
 
+/**
+ * Seconds auto mode waits before its first change. Shorter than AUTO_HOLD so choosing
+ * 'auto' visibly does something soon, since nothing on screen counts down the hold.
+ */
+export const FIRST_AUTO_HOLD: readonly [number, number] = [10, 20];
+
 /** Weighted kinds auto mode may move to next. Storms only build from, and ease back to, drizzle. */
 export const AUTO_NEXT: Record<WeatherKind, readonly { kind: WeatherKind; weight: number }[]> = {
   clear: [
@@ -133,7 +139,9 @@ export class WeatherModel {
   /** Chooses a fixed kind or 'auto'. Fixed kinds blend in over `duration` seconds. */
   setSetting(setting: WeatherSetting, duration = MANUAL_TRANSITION): void {
     if (setting === 'auto') {
-      if (this.current !== 'auto') this.untilAutoChange = this.holdFor(this.state.kind);
+      if (this.current !== 'auto') {
+        this.untilAutoChange = between(this.random, FIRST_AUTO_HOLD[0], FIRST_AUTO_HOLD[1]);
+      }
       this.current = 'auto';
       return;
     }

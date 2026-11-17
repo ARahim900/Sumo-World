@@ -1,10 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { WeatherKind } from '../core/types';
+import * as T from 'three';
+import type {
+  FrameContext,
+  QualityPreset,
+  SystemInitContext,
+  WeatherKind,
+  WeatherState,
+} from '../core/types';
+import { qualitySettings } from '../render/quality';
+import { LensDrops } from './lensDrops';
 import { Lightning, pulseIntensity, thunderDelay, thunderLoudness, type ThunderEvent } from './lightning';
 import {
   AUTO_NEXT,
   AUTO_TRANSITION,
+  FIRST_AUTO_HOLD,
   MANUAL_TRANSITION,
   WeatherModel,
   gustFactor,
@@ -12,7 +22,17 @@ import {
   nextAutoKind,
   smoothstep,
 } from './model';
-import { activeCount, fallSpeed, lensSpawnRate, streakLength, wrap, MAX_STREAK } from './rainMath';
+import {
+  MAX_STREAK,
+  SPLASH_CLOCK_WRAP,
+  SPLASH_PERIOD,
+  SPLASH_PERIOD_EIGHTHS,
+  activeCount,
+  fallSpeed,
+  lensSpawnRate,
+  streakLength,
+  wrap,
+} from './rainMath';
 import { createRandom } from './random';
 import { thunderVoice } from './thunder';
 import { sprayAmount } from './vfx';
@@ -34,6 +54,44 @@ const kindOf = (model: WeatherModel): WeatherKind => model.state.kind;
 function run(model: WeatherModel, seconds: number, reduceFlashes = false, onThunder?: (e: ThunderEvent) => void): void {
   const frames = Math.round(seconds / FRAME);
   for (let i = 0; i < frames; i++) model.update(FRAME, reduceFlashes, onThunder);
+}
+
+/** A complete frame for driving weather systems in node; nothing here needs a GPU. */
+function frameFor(scene: T.Scene, weather: WeatherState, preset: QualityPreset = 'high'): FrameContext {
+  const pose = () => ({ position: new T.Vector3(), quaternion: new T.Quaternion() });
+  return {
+    scene,
+    camera: new T.PerspectiveCamera(60, 16 / 9, 0.1, 550),
+    time: 0,
+    paused: false,
+    car: pose(),
+    player: pose(),
+    playerYaw: 0,
+    playerMoving: false,
+    focus: new T.Vector3(),
+    driving: false,
+    firstPerson: false,
+    mission: 'enter',
+    vehicle: {
+      speed: 0,
+      signedSpeed: 0,
+      rpm: 0,
+      gear: 0,
+      throttle: 0,
+      brake: 0,
+      handbrake: false,
+      slip: [0, 0, 0, 0],
+    },
+    wheels: [],
+    weather,
+    quality: qualitySettings(preset),
+    lowMotion: false,
+  };
+}
+
+/** Largest per-channel difference between two colours. */
+function colourStep(a: readonly number[], b: readonly number[]): number {
+  return Math.max(...a.map((value, i) => Math.abs(value - b[i])));
 }
 
 test('default weather reproduces the original rain, fog and wet grip', () => {
@@ -341,4 +399,130 @@ test('the weather system keeps one published state object and resets on dispose'
   assert.equal(system.state, published);
   assert.equal(system.state.kind, DEFAULT_WEATHER);
   assert.equal(system.setting, DEFAULT_WEATHER);
+});
+
+test('reversing a change mid-blend carries on smoothly from where the weather is', () => {
+  const model = new WeatherModel(createRandom(14));
+  model.setSetting('storm');
+  run(model, MANUAL_TRANSITION / 2);
+  assert.ok(model.transitioning);
+
+  const state = model.state;
+  let rain = state.rainDensity;
+  let fog = state.fogDensity;
+  let colour = [...model.fogColour];
+  model.setSetting('clear');
+  let largestRain = 0;
+  let largestFog = 0;
+  let largestColour = 0;
+  const frames = Math.round((MANUAL_TRANSITION + 0.5) / FRAME);
+  for (let i = 0; i < frames; i++) {
+    model.update(FRAME, false);
+    largestRain = Math.max(largestRain, Math.abs(state.rainDensity - rain));
+    largestFog = Math.max(largestFog, Math.abs(state.fogDensity - fog));
+    largestColour = Math.max(largestColour, colourStep(model.fogColour, colour));
+    rain = state.rainDensity;
+    fog = state.fogDensity;
+    colour = [...model.fogColour];
+  }
+  assert.ok(largestRain < 0.02, `rain jumped by ${largestRain} in one frame`);
+  assert.ok(largestFog < 0.0005, `fog density jumped by ${largestFog} in one frame`);
+  assert.ok(largestColour < 0.01, `fog colour jumped by ${largestColour} in one frame`);
+  assert.equal(state.rainDensity, 0);
+  assert.equal(state.fogDensity, weatherFor('clear').fogDensity);
+});
+
+test('auto makes its first change soon after it is chosen', () => {
+  for (let seed = 20; seed < 30; seed++) {
+    const model = new WeatherModel(createRandom(seed));
+    model.setSetting('auto');
+    let elapsed = 0;
+    while (!model.transitioning && elapsed < 60) {
+      model.update(FRAME, false);
+      elapsed += FRAME;
+    }
+    assert.ok(
+      elapsed >= FIRST_AUTO_HOLD[0] - FRAME && elapsed <= FIRST_AUTO_HOLD[1] + FRAME,
+      `first auto change came after ${elapsed.toFixed(2)} s`,
+    );
+  }
+});
+
+test('the splash clock wraps after a whole number of cycles for every splash period', () => {
+  for (let eighths = SPLASH_PERIOD_EIGHTHS[0]; eighths <= SPLASH_PERIOD_EIGHTHS[1]; eighths++) {
+    const cycles = SPLASH_CLOCK_WRAP / ((SPLASH_PERIOD * eighths) / 8);
+    assert.ok(Math.abs(cycles - Math.round(cycles)) < 1e-6, `${eighths}/8 period runs ${cycles} cycles`);
+  }
+  assert.ok(SPLASH_CLOCK_WRAP > 600, 'the wrap is rare enough to go unnoticed');
+  assert.ok(SPLASH_CLOCK_WRAP < 4000, 'the wrap keeps float32 time precise to well under a frame');
+});
+
+test('disposing the weather system restores the sky and fog and removes the flash', () => {
+  const scene = new T.Scene();
+  const sky = new T.Color('#05070d');
+  const fog = new T.FogExp2('#0a0d18', 0.006);
+  const fogBase = fog.color.clone();
+  scene.background = sky.clone();
+  scene.fog = fog;
+
+  const system = new WeatherSystem(createRandom(15));
+  const context: SystemInitContext = {
+    scene,
+    camera: new T.PerspectiveCamera(),
+    // WeatherSystem.init never touches the renderer, and node has no WebGL to build one.
+    renderer: {} as T.WebGLRenderer,
+    quality: qualitySettings('high'),
+    weather: system.state,
+  };
+  system.init(context);
+  const flash = scene.getObjectByName('lightning-flash');
+  assert.ok(flash instanceof T.AmbientLight);
+
+  const frame = frameFor(scene, system.state);
+  system.setWeather('fog');
+  for (let i = 0; i < Math.round((MANUAL_TRANSITION + 0.5) / FRAME); i++) system.update(FRAME, frame);
+  system.model.lightning.strike(false);
+  for (let i = 0; i < 3; i++) system.update(FRAME, frame);
+  assert.ok(flash.intensity > 0, 'the strike lights the scene');
+  assert.ok(scene.background instanceof T.Color && !scene.background.equals(sky), 'fog tints the sky');
+  assert.ok(!fog.color.equals(fogBase), 'fog takes on its own tint');
+
+  system.dispose();
+  assert.equal(scene.getObjectByName('lightning-flash'), undefined);
+  assert.ok(scene.background instanceof T.Color && scene.background.equals(sky), 'sky colour restored');
+  assert.ok(fog.color.equals(fogBase), 'fog colour restored');
+});
+
+test('lens drops upload their buffer only while drops are on the lens', () => {
+  const scene = new T.Scene();
+  const lens = new LensDrops();
+  lens.init(scene);
+  const mesh = scene.getObjectByName('lens-drops');
+  assert.ok(mesh instanceof T.Mesh);
+  const attribute = mesh.geometry.getAttribute('aDrop');
+  assert.ok(attribute instanceof T.InstancedBufferAttribute);
+
+  const dry = frameFor(scene, weatherFor('clear'));
+  const start = attribute.version;
+  for (let i = 0; i < 120; i++) lens.update(FRAME, dry, 0);
+  assert.equal(attribute.version, start, 'no uploads without rain');
+  assert.equal(mesh.visible, false);
+
+  const wet = frameFor(scene, weatherFor('storm'));
+  for (let i = 0; i < 240; i++) lens.update(FRAME, wet, 20);
+  assert.ok(attribute.version > start, 'drops landing on the lens are uploaded');
+  assert.equal(mesh.visible, true);
+
+  // Drops live at most six seconds; once they have all gone the uploads stop.
+  for (let i = 0; i < 60 * 8; i++) lens.update(FRAME, dry, 0);
+  const settled = attribute.version;
+  assert.equal(mesh.visible, false);
+  for (let i = 0; i < 120; i++) lens.update(FRAME, dry, 0);
+  assert.equal(attribute.version, settled, 'uploads stop once the lens is clear');
+
+  const low = frameFor(scene, weatherFor('storm'), 'low');
+  for (let i = 0; i < 240; i++) lens.update(FRAME, low, 20);
+  assert.equal(attribute.version, settled, 'lens drops stay off on the low preset');
+  lens.dispose();
+  assert.equal(scene.getObjectByName('lens-drops'), undefined);
 });
