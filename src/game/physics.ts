@@ -8,6 +8,7 @@ import {
   HANDBRAKE_GRIP,
   HANDBRAKE_LATERAL,
   PARKING_LATERAL_GRIP,
+  REAR_LATERAL_BIAS,
   TRACTION_CONTROL_SHARE,
   aeroDrag,
   baseLateralGrip,
@@ -453,6 +454,7 @@ export class Simulation {
 
       let lateral = baseLateralGrip(this.speed) * this.grip * lateralGripShare(this.slips[i], this.speed);
       lateral *= frictionCircleShare(usage, this.speed);
+      if (!front) lateral *= REAR_LATERAL_BIAS;
       if (handbraked) lateral *= HANDBRAKE_LATERAL;
 
       vehicle.setWheelSteering(i, front ? this.steering : 0);

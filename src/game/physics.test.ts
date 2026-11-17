@@ -1,14 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type RAPIER from '@dimforge/rapier3d-compat';
+import { Quaternion, Vector3 } from 'three';
 import { Simulation } from './physics';
 import { neutral, arrivalEligible, STEP, type Intent } from './content';
 import type { VehicleTelemetry } from './core/types';
-import { REDLINE_RPM, SPEED_LIMIT } from './vehicle/drivetrain';
+import { REDLINE_RPM, SPEED_LIMIT, TOP_GEAR } from './vehicle/drivetrain';
+import { weatherFor } from './weather/weather';
 
 const KMH = 1 / 3.6;
-const DRY = 1;
-const STORM = 0.78;
+const DRY = weatherFor('clear').gripFactor;
+const DRIZZLE = weatherFor('drizzle').gripFactor;
+const STORM = weatherFor('storm').gripFactor;
 
 const settle = (s: Simulation) => {
   for (let n = 0; n < 120; n++) s.step(neutral());
@@ -35,6 +38,23 @@ async function avenue(grip: number) {
 function treadmill(s: Simulation) {
   const p = s.car.translation();
   if (p.z < -170) s.car.setTranslation({ x: p.x, y: p.y, z: p.z + 340 }, true);
+}
+
+/** Moves the car to the opposite side of the open pad, keeping its velocity, before a wall. */
+function wrapPad(s: Simulation) {
+  const p = s.car.translation();
+  const x = p.x > 170 ? p.x - 340 : p.x < -170 ? p.x + 340 : p.x;
+  const z = p.z > 170 ? p.z - 340 : p.z < -170 ? p.z + 340 : p.z;
+  if (x !== p.x || z !== p.z) s.car.setTranslation({ x, y: p.y, z }, true);
+}
+
+/** Body slip angle at the centre of mass: lateral against forward velocity, radians. */
+function bodySlip(s: Simulation) {
+  const rotation = new Quaternion().copy(s.car.rotation());
+  const velocity = new Vector3().copy(s.car.linvel());
+  const forward = new Vector3(0, 0, 1).applyQuaternion(rotation);
+  const side = new Vector3(1, 0, 0).applyQuaternion(rotation);
+  return Math.atan2(Math.abs(velocity.dot(side)), Math.abs(velocity.dot(forward)));
 }
 
 /** Removes every building so manoeuvres can be tested on an open skid pad. */
@@ -123,13 +143,11 @@ test('accelerates forwards, service brake stops and moving exit rejects', async 
     settle(s);
     s.interact();
     for (let n = 0; n < 180; n++) s.step(drive({ throttle: 1 }));
-    console.log('Acceleration:', s.car.translation(), 'speed:', s.speed);
     assert.ok(s.car.translation().z < 10);
     assert.ok(s.speed > 8);
     assert.equal(s.interact(), false);
     const before = s.speed;
     for (let n = 0; n < 50; n++) s.step(drive({ brake: 1 }));
-    console.log('Braking:', s.speed);
     assert.ok(s.speed < before * 0.5);
   } finally {
     s.dispose();
@@ -246,7 +264,11 @@ test('0-100 km/h on dry tarmac takes a sane time', async () => {
   }
 });
 
-test('top speed is limited and the gearbox upshifts under full throttle', async () => {
+/**
+ * At full throttle the limiter is reached in fifth, so the climb stops there; sixth is a
+ * cruising overdrive that engages once the driver eases off at speed.
+ */
+test('top speed is limited, the gearbox upshifts and sixth engages when cruising', async () => {
   const s = await avenue(DRY);
   try {
     const gears: number[] = [];
@@ -265,6 +287,13 @@ test('top speed is limited and the gearbox upshifts under full throttle', async 
     assert.ok(peakRpm <= REDLINE_RPM);
     assert.ok(gears.length >= 4, `gears used: ${gears.join(', ')}`);
     for (let i = 1; i < gears.length; i++) assert.equal(gears[i], gears[i - 1] + 1, 'gears climb one at a time');
+
+    for (let n = 0; n < 3 / STEP; n++) {
+      s.step(drive({ throttle: 0.3 }));
+      treadmill(s);
+    }
+    s.readTelemetry(out);
+    assert.equal(out.gear, TOP_GEAR, 'easing off at speed selects the overdrive');
   } finally {
     s.dispose();
   }
@@ -312,6 +341,35 @@ test('full throttle on full lock at low speed does not spin, even in the wet', a
     assert.ok(worstRearSlip < 0.2, `rear slip ${worstRearSlip.toFixed(2)}`);
   } finally {
     s.dispose();
+  }
+});
+
+test('holding part steer at full throttle in the wet does not spin the car', async () => {
+  const cases = [
+    { grip: DRIZZLE, entry: 100, steer: 0.25 },
+    { grip: DRIZZLE, entry: 100, steer: 0.5 },
+    { grip: STORM, entry: 50, steer: 0.25 },
+    { grip: STORM, entry: 100, steer: 0.25 },
+  ];
+  for (const { grip, entry, steer } of cases) {
+    const s = await avenue(grip);
+    try {
+      clearBuildings(s);
+      while (s.speed < entry * KMH) {
+        s.step(drive({ throttle: 1 }));
+        wrapPad(s);
+      }
+      let worst = 0;
+      for (let n = 0; n < 3 / STEP; n++) {
+        s.step(drive({ throttle: 1, steer }));
+        wrapPad(s);
+        worst = Math.max(worst, bodySlip(s));
+      }
+      const degrees = (worst * 180) / Math.PI;
+      assert.ok(degrees < 15, `grip ${grip}, ${entry} km/h, steer ${steer}: body slip ${degrees.toFixed(1)} deg`);
+    } finally {
+      s.dispose();
+    }
   }
 });
 

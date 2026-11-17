@@ -20,8 +20,22 @@ export const LONGITUDINAL_GRIP = 1.2;
  * reserve keeps lateral grip available, so full throttle cannot break the rear loose.
  */
 export const TRACTION_CONTROL_SHARE = 0.85;
-/** Peak lateral friction passed to the ray-cast vehicle on dry tarmac once moving. */
+/**
+ * Friction-slip value handed to the ray-cast vehicle on dry tarmac once moving. It is not a
+ * pure lateral coefficient: Rapier's ray-cast vehicle (a port of Bullet's) caps the combined
+ * tyre impulse with it, weighting the forward impulse by 0.5. Drive and brake impulses, which
+ * `tractionLimit` already caps at `LONGITUDINAL_GRIP`, therefore eat into it, and
+ * `frictionCircleShare` trims it again for the same use. That double count is tuning, kept
+ * small by the `MIN_CIRCLE_SHARE` floor. When coasting the cornering limit is about
+ * `LATERAL_GRIP` times the weather grip (about 1.41 in drizzle).
+ */
 export const LATERAL_GRIP = 1.6;
+/**
+ * Rear lateral grip relative to the front. The GT runs wider rear tyres, so at the limit the
+ * front lets go first and the car understeers rather than spinning; the handbrake still
+ * breaks the rear loose for a drift.
+ */
+export const REAR_LATERAL_BIAS = 1.15;
 /**
  * Lateral friction at parking pace: the prototype's value, which keeps manoeuvring and
  * launches planted. It blends to `LATERAL_GRIP` between the two speeds below.
@@ -50,7 +64,7 @@ export const SLIDE_GRIP = 0.8;
 const GRIP_FADE_START = 4;
 const GRIP_FADE_END = 12;
 /** Lowest rear lateral grip share left when traction uses the whole friction budget. */
-const MIN_CIRCLE_SHARE = 0.78;
+export const MIN_CIRCLE_SHARE = 0.78;
 const ROLLING_FADE_SPEED = 0.5;
 
 function clamp01(value: number): number {

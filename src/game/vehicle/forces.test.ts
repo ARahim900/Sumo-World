@@ -6,7 +6,9 @@ import {
   BRAKE_FRONT_BIAS,
   DRAG_AREA,
   LATERAL_GRIP,
+  GRAVITY,
   LONGITUDINAL_GRIP,
+  MIN_CIRCLE_SHARE,
   PARKING_LATERAL_GRIP,
   SLIDE_GRIP,
   aeroDrag,
@@ -43,6 +45,14 @@ test('service brakes split front and rear by the bias and grip caps traction', (
   assert.equal(tractionLimit(-10, 1), 0);
 });
 
+test('at part pedal the brake bias, not the grip cap, sets the front-rear split', () => {
+  const staticLoad = (1200 * GRAVITY) / 4;
+  const front = brakeDemand(0.3, true);
+  const rear = brakeDemand(0.3, false);
+  assert.ok(front < tractionLimit(staticLoad, 1) && rear < tractionLimit(staticLoad, 1));
+  assert.ok(Math.abs(front / (front + rear) - BRAKE_FRONT_BIAS) < 1e-9);
+});
+
 test('base lateral grip is high at parking pace and settles to the moving value', () => {
   assert.equal(baseLateralGrip(0), PARKING_LATERAL_GRIP);
   assert.equal(baseLateralGrip(20), LATERAL_GRIP);
@@ -61,7 +71,7 @@ test('traction use shrinks lateral grip only at speed, and never below the floor
   assert.equal(frictionCircleShare(0, 20), 1);
   assert.equal(frictionCircleShare(1, 2), 1);
   assert.ok(frictionCircleShare(0.6, 20) < 1);
-  assert.ok(frictionCircleShare(1, 20) >= 0.75);
+  assert.equal(frictionCircleShare(1, 20), MIN_CIRCLE_SHARE);
 });
 
 test('drift assist only acts once the car is well sideways at speed', () => {
