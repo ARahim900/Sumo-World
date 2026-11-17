@@ -1,4 +1,4 @@
-import type { FrameContext, GameSystem } from '../core/types';
+import type { FrameContext, GameSystem, VehicleTelemetry } from '../core/types';
 import { IDLE_RPM, REDLINE_RPM } from '../vehicle/drivetrain';
 
 /** Firing pulses per crankshaft revolution for a four-stroke six-cylinder engine. */
@@ -17,6 +17,8 @@ const SHIFT_DIP_DEPTH = 0.6;
 /** Slip (tangent of slip angle) where tyres start to squeal. */
 const SQUEAL_SLIP = 0.18;
 const SQUEAL_RANGE = 0.5;
+/** Squeal level of rear tyres locked by the handbrake. */
+const HANDBRAKE_SQUEAL = 0.7;
 
 export interface EngineVoice {
   /** Fundamental firing frequency, Hz. */
@@ -50,17 +52,32 @@ export function engineVoice(rpm: number, load: number): EngineVoice {
   };
 }
 
+/**
+ * 0..1 engine load: the throttle in a forward gear, the brake pedal in reverse (the pedal
+ * that drives the car backwards).
+ */
+export function engineLoad(vehicle: Pick<VehicleTelemetry, 'gear' | 'throttle' | 'brake'>): number {
+  return vehicle.gear === -1 ? vehicle.brake : vehicle.throttle;
+}
+
 /** Engine level multiplier `elapsed` seconds into a gear change (1 when no shift is active). */
 export function shiftDipGain(elapsed: number): number {
   if (elapsed >= SHIFT_DIP_TIME) return 1;
   return 1 - SHIFT_DIP_DEPTH * (1 - Math.max(0, elapsed) / SHIFT_DIP_TIME);
 }
 
-/** 0..1 tyre squeal level from the largest wheel slip, silent at walking pace. */
-export function squealLevel(slip: readonly number[], speed: number): number {
+/**
+ * 0..1 tyre squeal level, silent at walking pace. Sideways sliding comes from the largest
+ * wheel slip angle; locked rear wheels under the handbrake squeal even in a straight line.
+ * Wheelspin and locked brakes add nothing, because traction control and ABS keep the tyres
+ * below their grip limit.
+ */
+export function squealLevel(slip: readonly number[], speed: number, handbrake: boolean): number {
   let worst = 0;
   for (const value of slip) worst = Math.max(worst, Math.abs(value));
-  return clamp01((worst - SQUEAL_SLIP) / SQUEAL_RANGE) * clamp01((speed - 3) / 5);
+  const sliding = clamp01((worst - SQUEAL_SLIP) / SQUEAL_RANGE);
+  const locked = handbrake ? HANDBRAKE_SQUEAL : 0;
+  return Math.max(sliding, locked) * clamp01((speed - 3) / 5);
 }
 
 /** 0..1 level of the rain ambience bed. */
@@ -136,26 +153,24 @@ export class EngineAudio implements GameSystem {
     const graph = this.graph;
     if (frame.paused || !graph) return;
     const now = graph.context.currentTime;
-    const set = (param: AudioParam, value: number) => param.setTargetAtTime(value, now, SMOOTHING);
-
-    const voice = engineVoice(vehicle.rpm, vehicle.throttle);
+    const voice = engineVoice(vehicle.rpm, engineLoad(vehicle));
     const running = frame.driving ? 1 : 0;
     const dip = shiftDipGain(this.sinceShift);
-    set(graph.fundamental.frequency, voice.frequency);
-    set(graph.subharmonic.frequency, voice.frequency / 2);
-    set(graph.harmonic.frequency, voice.frequency * 2.01);
-    set(graph.engineFilter.frequency, voice.cutoff * (0.6 + 0.4 * dip));
-    set(graph.engineGain.gain, voice.gain * dip * running);
-    set(graph.roarFilter.frequency, voice.frequency * 4);
-    set(graph.roarGain.gain, voice.roar * dip * running);
+    ramp(graph.fundamental.frequency, voice.frequency, now);
+    ramp(graph.subharmonic.frequency, voice.frequency / 2, now);
+    ramp(graph.harmonic.frequency, voice.frequency * 2.01, now);
+    ramp(graph.engineFilter.frequency, voice.cutoff * (0.6 + 0.4 * dip), now);
+    ramp(graph.engineGain.gain, voice.gain * dip * running, now);
+    ramp(graph.roarFilter.frequency, voice.frequency * 4, now);
+    ramp(graph.roarGain.gain, voice.roar * dip * running, now);
 
-    const squeal = squealLevel(vehicle.slip, vehicle.speed) * running;
-    set(graph.squealGain.gain, 0.03 * squeal);
-    set(graph.squealFilter.frequency, 1300 + 500 * squeal);
-    set(graph.squealTone.frequency, 780 + 160 * squeal);
+    const squeal = squealLevel(vehicle.slip, vehicle.speed, vehicle.handbrake) * running;
+    ramp(graph.squealGain.gain, 0.03 * squeal, now);
+    ramp(graph.squealFilter.frequency, 1300 + 500 * squeal, now);
+    ramp(graph.squealTone.frequency, 780 + 160 * squeal, now);
 
-    set(graph.rainGain.gain, 0.025 * rainLevel(frame.weather.rainDensity));
-    set(graph.hissGain.gain, 0.02 * hissLevel(frame.weather.wetness, vehicle.speed));
+    ramp(graph.rainGain.gain, 0.025 * rainLevel(frame.weather.rainDensity), now);
+    ramp(graph.hissGain.gain, 0.02 * hissLevel(frame.weather.wetness, vehicle.speed), now);
   }
 
   dispose(): void {
@@ -225,6 +240,11 @@ export class EngineAudio implements GameSystem {
     };
     return this.graph;
   }
+}
+
+/** Glides an audio parameter towards `value` with the shared smoothing time constant. */
+function ramp(param: AudioParam, value: number, now: number): void {
+  param.setTargetAtTime(value, now, SMOOTHING);
 }
 
 function gainNode(context: AudioContext, value: number, destination: AudioNode): GainNode {
