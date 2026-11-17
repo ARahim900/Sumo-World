@@ -1,3 +1,4 @@
+import { DEFAULT_QUALITY } from '../render/quality';
 import type { Snapshot } from './types';
 
 /**
@@ -21,7 +22,8 @@ export const initialSnapshot: Snapshot = {
   sound: false,
   firstPerson: false,
   fps: 0,
-  quality: 'high',
+  quality: DEFAULT_QUALITY,
+  adaptiveResolution: true,
   weather: 'drizzle',
   weatherSetting: 'drizzle',
   lowMotion: false,

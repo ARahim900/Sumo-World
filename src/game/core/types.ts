@@ -240,6 +240,8 @@ export interface Snapshot {
   firstPerson: boolean;
   fps: number;
   quality: QualityPreset;
+  /** True while render resolution scales down automatically when frames run over budget. */
+  adaptiveResolution: boolean;
   weather: WeatherKind;
   weatherSetting: WeatherSetting;
   lowMotion: boolean;
@@ -254,6 +256,7 @@ export interface RuntimeApi {
   restart(): void;
   recover(): void;
   setQuality(preset: QualityPreset): void;
+  setAdaptiveResolution(enabled: boolean): void;
   setWeather(setting: WeatherSetting): void;
   /** Legacy menu toggle: switches between clear and drizzle. */
   toggleRain(): void;

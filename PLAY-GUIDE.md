@@ -19,9 +19,9 @@ Open http://127.0.0.1:3000 while the local server is running, or double-click `L
 | C | Look behind while driving |
 | S, released then pressed again after stopping | Reverse |
 | R | Recover at the starting garage |
-| Escape | Pause; resume through the menu |
+| Escape | Pause and resume once the drive has started |
 
-The start and pause menus share a settings panel: **Quality** (Low, Medium, High, Ultra), **Weather** (Auto, Clear, Drizzle, Storm, Fog), **Low motion** and **Engine audio**. Choices are saved in the browser and restored on the next visit; engine audio is restored when you press **Enter Sumo World**, because browsers only start sound after a click. The pause menu also offers recovery and mission restart. Losing window focus pauses the simulation and clears held controls.
+The start and pause menus share a settings panel: **Quality** (Low, Medium, High, Ultra), **Auto resolution**, **Weather** (Auto, Clear, Drizzle, Storm, Fog), **Low motion** and **Engine audio**. Choices are saved in the browser and restored on the next visit; engine audio is restored when you press **Enter Sumo World**, because browsers only start sound after a click. The pause menu also offers recovery and mission restart. Losing window focus pauses the simulation and clears held controls.
 
 While driving, the HUD shows speed, a rev counter with redline, the current gear (R, N, 1) and the weather. Add `?debug` to the address for frame rate and renderer counters. Phones and tablets without a mouse see a desktop-only notice; touch controls are not implemented.
 

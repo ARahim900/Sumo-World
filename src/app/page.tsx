@@ -174,9 +174,12 @@ export default function Page() {
     if (!state.ready || !game || !settings || applied.current) return;
     applied.current = true;
     if (settings.quality !== state.quality) game.setQuality(settings.quality);
+    if (settings.adaptiveResolution !== state.adaptiveResolution) {
+      game.setAdaptiveResolution(settings.adaptiveResolution);
+    }
     if (settings.weather !== state.weatherSetting) game.setWeather(settings.weather);
     if (settings.lowMotion !== state.lowMotion) game.toggleMotion();
-  }, [state.ready, state.quality, state.weatherSetting, state.lowMotion, settings]);
+  }, [state.ready, state.quality, state.adaptiveResolution, state.weatherSetting, state.lowMotion, settings]);
 
   const remember = (patch: Partial<GameSettings>) => {
     const next = { ...(settings ?? defaultSettings()), ...patch };
@@ -207,6 +210,12 @@ export default function Page() {
   const changeQuality = (preset: QualityPreset) => {
     runtime.current?.setQuality(preset);
     remember({ quality: preset });
+  };
+
+  const toggleAdaptiveResolution = () => {
+    const enabled = !state.adaptiveResolution;
+    runtime.current?.setAdaptiveResolution(enabled);
+    remember({ adaptiveResolution: enabled });
   };
 
   const changeWeather = (setting: WeatherSetting) => {
@@ -254,6 +263,7 @@ export default function Page() {
             <SettingsPanel
               state={state}
               onQuality={changeQuality}
+              onAdaptiveResolution={toggleAdaptiveResolution}
               onWeather={changeWeather}
               onLowMotion={toggleLowMotion}
               onSound={toggleSound}

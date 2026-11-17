@@ -36,6 +36,12 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 const MAX_FRAME = 0.08;
 const HUD_INTERVAL = 0.1;
 const SETTLE_STEPS = 90;
+/**
+ * Title-screen camera: in the avenue, at least 7 m from every tower, framing the parked car to
+ * the right of the menu panel.
+ */
+const MENU_CAMERA_POSITION = new T.Vector3(-3, 2.4, 33);
+const MENU_CAMERA_TARGET = new T.Vector3(2.5, 0.9, 22);
 
 function createWheelState(): WheelState {
   return {
@@ -62,9 +68,7 @@ export class Runtime implements RuntimeApi {
   private readonly weather = new WeatherSystem();
   private readonly audio = new EngineAudio();
   private readonly thunder = new ThunderAudio(() => this.audio.context);
-  // Off until the UI offers a toggle: on refresh-capped displays each trial briefly drops to
-  // the resolution floor even though the GPU is idle.
-  private readonly adaptive = new AdaptiveResolution({ enabled: false });
+  private readonly adaptive = new AdaptiveResolution();
   private readonly systems: GameSystem[];
   private readonly resizeObserver: ResizeObserver;
   private quality: QualitySettings = qualitySettings(DEFAULT_QUALITY);
@@ -72,6 +76,8 @@ export class Runtime implements RuntimeApi {
 
   private ready = false;
   private paused = true;
+  /** Set once the UI has started the drive, so Escape on the title screen cannot start it. */
+  private hasStarted = false;
   private disposed = false;
   private released = false;
   private firstPerson = false;
@@ -187,8 +193,8 @@ export class Runtime implements RuntimeApi {
       this.sim.setGripFactor(this.weather.state.gripFactor);
       for (let i = 0; i < SETTLE_STEPS; i++) this.sim.step(neutral());
       this.resetInterpolation();
-      this.camera.position.set(12, 5, 32);
-      this.camera.lookAt(3, 1, 18);
+      this.camera.position.copy(MENU_CAMERA_POSITION);
+      this.camera.lookAt(MENU_CAMERA_TARGET);
       this.ready = true;
       this.resize();
       this.emit();
@@ -201,6 +207,7 @@ export class Runtime implements RuntimeApi {
 
   start(): void {
     if (!this.ready) return;
+    this.hasStarted = true;
     this.paused = false;
     this.input.clear();
     this.queuedJump = false;
@@ -239,6 +246,18 @@ export class Runtime implements RuntimeApi {
     this.resolutionScale = 1;
     this.view.applyQuality(this.quality);
     this.car.applyQuality(preset);
+    this.emit();
+  }
+
+  /**
+   * Turns automatic resolution scaling on or off. Players on refresh-capped displays may prefer
+   * it off: there each over-budget trial briefly drops to the floor before it is undone.
+   */
+  setAdaptiveResolution(enabled: boolean): void {
+    this.adaptive.enabled = enabled;
+    this.adaptive.reset();
+    this.resolutionScale = 1;
+    this.view.applyQuality(this.quality);
     this.emit();
   }
 
@@ -313,8 +332,8 @@ export class Runtime implements RuntimeApi {
       this.last = now;
       const intent = this.input.read();
       if (this.input.take('Escape')) {
-        if (this.paused) this.start();
-        else this.pause();
+        if (!this.paused) this.pause();
+        else if (this.hasStarted) this.start();
       }
 
       if (!this.paused) {
@@ -441,6 +460,7 @@ export class Runtime implements RuntimeApi {
       firstPerson: this.firstPerson,
       fps: this.fps,
       quality: this.quality.preset,
+      adaptiveResolution: this.adaptive.enabled,
       weather: this.weather.state.kind,
       weatherSetting: this.weather.setting,
       lowMotion: this.lowMotion,

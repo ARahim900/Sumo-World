@@ -18,19 +18,33 @@ import {
 const fallback = defaultSettings();
 
 test('defaults match the runtime defaults and honour reduced motion', () => {
-  assert.deepEqual(fallback, { quality: 'high', weather: 'drizzle', lowMotion: false, sound: false });
+  assert.deepEqual(fallback, {
+    quality: 'medium',
+    adaptiveResolution: true,
+    weather: 'drizzle',
+    lowMotion: false,
+    sound: false,
+  });
   assert.equal(defaultSettings(true).lowMotion, true);
 });
 
 test('parseSettings keeps valid fields and replaces invalid ones', () => {
-  const raw = JSON.stringify({ quality: 'ultra', weather: 'tornado', lowMotion: true, sound: 'yes' });
+  const raw = JSON.stringify({
+    quality: 'ultra',
+    adaptiveResolution: 'off',
+    weather: 'tornado',
+    lowMotion: true,
+    sound: 'yes',
+  });
   assert.deepEqual(parseSettings(raw, fallback), {
     quality: 'ultra',
+    adaptiveResolution: true,
     weather: 'drizzle',
     lowMotion: true,
     sound: false,
   });
   assert.equal(parseSettings(JSON.stringify({ weather: 'auto' }), fallback).weather, 'auto');
+  assert.equal(parseSettings(JSON.stringify({ adaptiveResolution: false }), fallback).adaptiveResolution, false);
 });
 
 test('parseSettings falls back on missing, malformed or non-object data', () => {
@@ -49,7 +63,13 @@ test('load and save round-trip through storage and survive storage that throws',
       values.set(key, value);
     },
   };
-  const chosen: GameSettings = { quality: 'low', weather: 'fog', lowMotion: true, sound: true };
+  const chosen: GameSettings = {
+    quality: 'low',
+    adaptiveResolution: false,
+    weather: 'fog',
+    lowMotion: true,
+    sound: true,
+  };
   assert.equal(saveSettings(storage, chosen), true);
   assert.ok(values.has(SETTINGS_KEY));
   assert.deepEqual(loadSettings(storage, fallback), chosen);

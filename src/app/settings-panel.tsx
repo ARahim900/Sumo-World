@@ -5,6 +5,7 @@ import { WEATHER_SETTINGS, qualityLabel, weatherLabel } from './settings';
 interface SettingsPanelProps {
   state: Snapshot;
   onQuality: (preset: QualityPreset) => void;
+  onAdaptiveResolution: () => void;
   onWeather: (setting: WeatherSetting) => void;
   onLowMotion: () => void;
   onSound: () => void;
@@ -60,7 +61,8 @@ function Toggle(props: { label: string; checked: boolean; disabled: boolean; onT
   );
 }
 
-export function SettingsPanel({ state, onQuality, onWeather, onLowMotion, onSound }: SettingsPanelProps) {
+export function SettingsPanel(props: SettingsPanelProps) {
+  const { state, onQuality, onAdaptiveResolution, onWeather, onLowMotion, onSound } = props;
   const disabled = !state.ready;
   return (
     <section className="settings-panel" aria-label="Settings">
@@ -83,6 +85,12 @@ export function SettingsPanel({ state, onQuality, onWeather, onLowMotion, onSoun
         onChange={onWeather}
       />
       <div className="toggles">
+        <Toggle
+          label="Auto resolution"
+          checked={state.adaptiveResolution}
+          disabled={disabled}
+          onToggle={onAdaptiveResolution}
+        />
         <Toggle label="Low motion" checked={state.lowMotion} disabled={disabled} onToggle={onLowMotion} />
         <Toggle label="Engine audio" checked={state.sound} disabled={disabled} onToggle={onSound} />
       </div>

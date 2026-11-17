@@ -59,8 +59,11 @@ brake/reverse, west button enter/exit, south jump, east handbrake, menu pause.
 
 The start and pause menus share one settings panel:
 
-- **Quality**: Low, Medium, High (default) or Ultra. Changes pixel-ratio cap, bloom, rain
-  particle budget and draw distance.
+- **Quality**: Low, Medium (default), High or Ultra. Changes pixel-ratio cap, anti-aliasing,
+  bloom, ambient occlusion, rain particle budget and draw distance.
+- **Auto resolution** (default on): lowers the render resolution while frames run over the
+  60 fps budget and raises it again once they recover. Turn it off on displays capped below
+  60 Hz, where it can briefly dip before it gives up.
 - **Weather**: Auto, Clear, Drizzle (default), Storm or Fog. Weather also changes tyre grip.
 - **Low motion**: removes the speed-based field-of-view kick, keeps the chase camera closer
   and turns off menu transitions. It defaults to on when the system asks for reduced motion.

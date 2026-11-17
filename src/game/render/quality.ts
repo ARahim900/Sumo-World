@@ -2,7 +2,11 @@ import type { QualityPreset, QualitySettings } from '../core/types';
 
 export const QUALITY_PRESETS: readonly QualityPreset[] = ['low', 'medium', 'high', 'ultra'];
 
-export const DEFAULT_QUALITY: QualityPreset = 'high';
+/**
+ * Medium is the first-launch preset: high costs roughly twice the frame time, which integrated
+ * laptop GPUs cannot sustain at 60 fps. Adaptive resolution covers what medium still misses.
+ */
+export const DEFAULT_QUALITY: QualityPreset = 'medium';
 
 const SETTINGS: Record<QualityPreset, Omit<QualitySettings, 'preset'>> = {
   low: {
@@ -17,13 +21,13 @@ const SETTINGS: Record<QualityPreset, Omit<QualitySettings, 'preset'>> = {
     drawDistance: 260,
   },
   medium: {
-    pixelRatioCap: 1.25,
+    pixelRatioCap: 1,
     shadows: true,
     shadowMapSize: 1024,
     bloom: true,
     ssao: false,
     ssr: false,
-    aa: 'smaa',
+    aa: 'fxaa',
     rainParticles: 1200,
     drawDistance: 400,
   },

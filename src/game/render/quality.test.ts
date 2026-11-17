@@ -44,13 +44,17 @@ const GPU_BOUND = load(2, 60);
 const EDGE = load(2, 22);
 const LIGHT = load(2, 10);
 
-test('default preset keeps the original resolution, bloom, draw distance and rain budget', () => {
-  const high = qualitySettings(DEFAULT_QUALITY);
-  assert.equal(high.preset, 'high');
-  assert.equal(high.pixelRatioCap, 1.5);
-  assert.equal(high.bloom, true);
-  assert.equal(high.drawDistance, 550);
-  assert.equal(high.rainParticles, 1800);
+test('first launch uses medium at native resolution with FXAA, leaving SMAA to high and ultra', () => {
+  const medium = qualitySettings(DEFAULT_QUALITY);
+  assert.equal(medium.preset, 'medium');
+  assert.equal(medium.pixelRatioCap, 1);
+  assert.equal(medium.aa, 'fxaa');
+  assert.equal(medium.shadows, true);
+  assert.equal(medium.bloom, true);
+  assert.equal(medium.ssao, false);
+  assert.equal(qualitySettings('high').aa, 'smaa');
+  assert.equal(qualitySettings('ultra').aa, 'smaa');
+  assert.equal(pixelRatioFor(1.25, medium), 1, '125% display scaling renders at native size');
 });
 
 test('presets scale monotonically and return caller-owned copies', () => {

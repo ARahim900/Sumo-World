@@ -9,6 +9,7 @@ import { DEFAULT_WEATHER, WEATHER_KINDS } from '../game/weather/weather';
 /** Player preferences kept between visits. */
 export interface GameSettings {
   quality: QualityPreset;
+  adaptiveResolution: boolean;
   weather: WeatherSetting;
   lowMotion: boolean;
   sound: boolean;
@@ -21,6 +22,7 @@ export const WEATHER_SETTINGS: readonly WeatherSetting[] = ['auto', ...WEATHER_K
 export function defaultSettings(prefersReducedMotion = false): GameSettings {
   return {
     quality: DEFAULT_QUALITY,
+    adaptiveResolution: true,
     weather: DEFAULT_WEATHER,
     lowMotion: prefersReducedMotion,
     sound: false,
@@ -51,6 +53,8 @@ export function parseSettings(raw: string | null, fallback: GameSettings): GameS
   const record = data as Record<string, unknown>;
   return {
     quality: isQuality(record.quality) ? record.quality : fallback.quality,
+    adaptiveResolution:
+      typeof record.adaptiveResolution === 'boolean' ? record.adaptiveResolution : fallback.adaptiveResolution,
     weather: isWeatherSetting(record.weather) ? record.weather : fallback.weather,
     lowMotion: typeof record.lowMotion === 'boolean' ? record.lowMotion : fallback.lowMotion,
     sound: typeof record.sound === 'boolean' ? record.sound : fallback.sound,

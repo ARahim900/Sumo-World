@@ -32,9 +32,18 @@ test('loads the city, enters, responds to keys and keeps settings', async ({ pag
 
   const enter = page.getByRole('button', { name: 'Enter Sumo World' });
   await expect(enter).toBeEnabled({ timeout: 120_000 });
-  await enter.click();
 
   const game = page.locator('main.game');
+  const titleZ = await numberAttribute(game, 'data-z');
+  await page.keyboard.press('Escape');
+  await page.keyboard.down('KeyW');
+  await page.waitForTimeout(1_000);
+  await page.keyboard.up('KeyW');
+  expect(await numberAttribute(game, 'data-z')).toBe(titleZ);
+  await expect(enter).toBeVisible();
+
+  await enter.click();
+
   await expect(game).toHaveAttribute('data-ready', 'true');
   await expect(page.getByText('Your night starts here.')).toBeVisible();
 
