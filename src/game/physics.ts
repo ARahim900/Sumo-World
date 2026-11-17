@@ -317,6 +317,7 @@ export class Simulation {
       signedSpeed: this.signedSpeed,
       demand: this.demand,
       reverse: this.reverseSelected,
+      braking: servicePedal > PEDAL_DEADZONE && !this.reverseSelected,
     });
     this.applyWheelForces(this.driving ? driveForce : 0, servicePedal);
     this.applyBodyForces(rotation, velocity, spin, forward);

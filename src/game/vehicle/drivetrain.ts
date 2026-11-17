@@ -40,6 +40,13 @@ const PEDAL_DEADZONE = 0.05;
 const KICKDOWN_THROTTLE = 0.95;
 const KICKDOWN_MAX_RPM = 4000;
 const KICKDOWN_TARGET_RPM = 5800;
+/**
+ * Under braking the gearbox drops to the highest gear that keeps locked rpm at or above
+ * BRAKE_DOWNSHIFT_MIN_RPM, without letting it pass BRAKE_DOWNSHIFT_MAX_RPM, so full drive is
+ * ready the moment the throttle returns.
+ */
+const BRAKE_DOWNSHIFT_MIN_RPM = 2000;
+const BRAKE_DOWNSHIFT_MAX_RPM = 3500;
 const LIMITER_BAND = 1.5;
 
 /** Full-load torque curve as (rpm, N·m) points; linear in between. */
@@ -109,11 +116,29 @@ export function downshiftRpm(throttle: number): number {
 }
 
 /**
- * The forward gear the automatic wants next, at most one step from `gear`. The up and down
- * thresholds are spaced so that a shift never lands beyond the opposite threshold.
+ * The forward gear to hold while the service brake is on: never higher than `gear`, and as
+ * many steps lower as it takes to bring locked rpm into the braking band.
  */
-export function selectGear(gear: number, speed: number, throttle: number): number {
+export function brakingGear(gear: number, speed: number): number {
+  let target = Math.min(TOP_GEAR, Math.max(1, gear));
+  while (
+    target > 1 &&
+    lockedRpm(speed, target) < BRAKE_DOWNSHIFT_MIN_RPM &&
+    lockedRpm(speed, target - 1) <= BRAKE_DOWNSHIFT_MAX_RPM
+  ) {
+    target--;
+  }
+  return target;
+}
+
+/**
+ * The forward gear the automatic wants next. Without braking it is at most one step from
+ * `gear`, and the up and down thresholds are spaced so that a shift never lands beyond the
+ * opposite threshold. While braking it never shifts up (see `brakingGear`).
+ */
+export function selectGear(gear: number, speed: number, throttle: number, braking = false): number {
   const current = Math.min(TOP_GEAR, Math.max(1, gear));
+  if (braking) return brakingGear(current, speed);
   const rpm = lockedRpm(speed, current);
   if (current < TOP_GEAR && rpm > upshiftRpm(throttle)) return current + 1;
   if (current > 1 && rpm < downshiftRpm(throttle)) return current - 1;
@@ -155,6 +180,8 @@ export interface PowertrainInput {
   demand: number;
   /** True when reverse is selected. */
   reverse: boolean;
+  /** True while the service brake slows the car in a forward gear. */
+  braking: boolean;
 }
 
 /** Stateful engine and automatic gearbox, stepped at the physics rate. */
@@ -187,8 +214,11 @@ export class Powertrain {
       return torque > 0 ? -wheelForce(torque, -1) : 0;
     }
 
-    const target = selectGear(this.gear, speed, demand);
-    if (target !== this.gear && this.sinceShift >= SHIFT_INTERVAL) {
+    const target = selectGear(this.gear, speed, demand, input.braking);
+    // Braking downshifts skip the interval: the car is slowing through several ratios at once
+    // and the driver expects the right gear as soon as the throttle returns.
+    const brakingDownshift = input.braking && target < this.gear;
+    if (target !== this.gear && (brakingDownshift || this.sinceShift >= SHIFT_INTERVAL)) {
       this.gear = target;
       this.sinceShift = 0;
       this.cut = SHIFT_CUT_TIME;

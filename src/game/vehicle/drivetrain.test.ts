@@ -9,6 +9,7 @@ import {
   SHIFT_INTERVAL,
   SPEED_LIMIT,
   TOP_GEAR,
+  brakingGear,
   downshiftRpm,
   engineRpm,
   lockedRpm,
@@ -59,22 +60,22 @@ test('shift thresholds leave a gap so a shift never triggers the opposite shift'
 test('powertrain upshifts, respects the shift interval and cuts torque during a shift', () => {
   const powertrain = new Powertrain();
   const speedFor = (rpm: number, gear: number) => (rpm / lockedRpm(1, gear));
-  const beforeShift = powertrain.step(STEP, { signedSpeed: speedFor(5000, 1), demand: 1, reverse: false });
+  const beforeShift = powertrain.step(STEP, { signedSpeed: speedFor(5000, 1), demand: 1, reverse: false, braking: false });
   assert.equal(powertrain.gear, 1);
 
   const shiftSpeed = speedFor(6900, 1);
-  const duringCut = powertrain.step(STEP, { signedSpeed: shiftSpeed, demand: 1, reverse: false });
+  const duringCut = powertrain.step(STEP, { signedSpeed: shiftSpeed, demand: 1, reverse: false, braking: false });
   assert.equal(powertrain.gear, 2);
   assert.equal(powertrain.shifted, true);
   assert.ok(duringCut < beforeShift * 0.5);
 
-  powertrain.step(STEP, { signedSpeed: speedFor(6900, 2), demand: 1, reverse: false });
+  powertrain.step(STEP, { signedSpeed: speedFor(6900, 2), demand: 1, reverse: false, braking: false });
   assert.equal(powertrain.gear, 2, 'a second shift must wait for the shift interval');
 
   let afterCut = 0;
   const steps = Math.ceil(Math.max(SHIFT_INTERVAL, SHIFT_CUT_TIME) / STEP) + 1;
   for (let i = 0; i < steps; i++) {
-    afterCut = powertrain.step(STEP, { signedSpeed: speedFor(4500, 2), demand: 1, reverse: false });
+    afterCut = powertrain.step(STEP, { signedSpeed: speedFor(4500, 2), demand: 1, reverse: false, braking: false });
   }
   assert.equal(powertrain.gear, 2);
   assert.ok(afterCut > duringCut * 2);
@@ -82,15 +83,54 @@ test('powertrain upshifts, respects the shift interval and cuts torque during a 
 
 test('powertrain engine-brakes when coasting and limits top and reverse speed', () => {
   const powertrain = new Powertrain();
-  assert.ok(powertrain.step(STEP, { signedSpeed: 20, demand: 0, reverse: false }) < 0);
-  assert.equal(powertrain.step(STEP, { signedSpeed: 0, demand: 0, reverse: false }), 0);
+  assert.ok(powertrain.step(STEP, { signedSpeed: 20, demand: 0, reverse: false, braking: false }) < 0);
+  assert.equal(powertrain.step(STEP, { signedSpeed: 0, demand: 0, reverse: false, braking: false }), 0);
 
   powertrain.reset();
   powertrain.gear = TOP_GEAR - 1;
-  assert.equal(powertrain.step(STEP, { signedSpeed: SPEED_LIMIT + 0.1, demand: 1, reverse: false }), 0);
+  assert.equal(powertrain.step(STEP, { signedSpeed: SPEED_LIMIT + 0.1, demand: 1, reverse: false, braking: false }), 0);
 
   powertrain.reset();
-  assert.ok(powertrain.step(STEP, { signedSpeed: 0, demand: 1, reverse: true }) < 0);
+  assert.ok(powertrain.step(STEP, { signedSpeed: 0, demand: 1, reverse: true, braking: false }) < 0);
   assert.equal(powertrain.telemetryGear(-2, 1), -1);
-  assert.equal(powertrain.step(STEP, { signedSpeed: -REVERSE_SPEED_LIMIT, demand: 1, reverse: true }), 0);
+  assert.equal(powertrain.step(STEP, { signedSpeed: -REVERSE_SPEED_LIMIT, demand: 1, reverse: true, braking: false }), 0);
+});
+
+test('braking never shifts up and drops several gears at once into the braking band', () => {
+  for (let gear = 1; gear <= TOP_GEAR; gear++) {
+    for (let speed = 0; speed <= 70; speed += 0.5) {
+      const target = selectGear(gear, speed, 0, true);
+      assert.ok(target <= gear, `gear ${gear} at ${speed} m/s shifted up to ${target} under braking`);
+      assert.equal(target, brakingGear(gear, speed));
+    }
+  }
+  const crawl = 30 / 3.6;
+  assert.ok(brakingGear(TOP_GEAR, crawl) <= 2, 'sixth at 30 km/h drops straight to a low gear');
+  assert.ok(lockedRpm(crawl, brakingGear(TOP_GEAR, crawl)) <= 3500);
+});
+
+test('braking from 125 to 30 km/h ends in second or lower and pulls hard on the throttle', () => {
+  const powertrain = new Powertrain();
+  let speed = 125 / 3.6;
+  for (let i = 0; i < 600; i++) {
+    powertrain.step(STEP, { signedSpeed: speed, demand: 0.6, reverse: false, braking: false });
+  }
+  const onset = powertrain.gear;
+  let highest = onset;
+
+  const deceleration = 8;
+  while (speed > 30 / 3.6) {
+    speed = Math.max(30 / 3.6, speed - deceleration * STEP);
+    powertrain.step(STEP, { signedSpeed: speed, demand: 0, reverse: false, braking: true });
+    highest = Math.max(highest, powertrain.gear);
+  }
+  assert.equal(highest, onset, 'the gearbox must not shift up while braking');
+  assert.ok(powertrain.gear <= 2, `ended braking in gear ${powertrain.gear}`);
+
+  let drive = 0;
+  const steps = Math.ceil(SHIFT_CUT_TIME / STEP) + 1;
+  for (let i = 0; i < steps; i++) {
+    drive = powertrain.step(STEP, { signedSpeed: speed, demand: 1, reverse: false, braking: false });
+  }
+  assert.ok(drive > 4500, `full throttle after braking gives only ${drive.toFixed(0)} N`);
 });
