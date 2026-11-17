@@ -2,10 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as T from 'three';
 import { blocks } from '../content';
+import { patchFacadeShader } from './city';
 import {
+  BENCH_DEPTH,
+  BENCH_LENGTH,
   BUILDING_SIGN_CELLS,
   CHUNK_GRID,
   CROSSING_OFFSET,
+  LAMP_POLE_WIDTH,
   NearestPoints,
   ROAD_HALF_WIDTH,
   STREET_LINES,
@@ -16,20 +20,34 @@ import {
   chunkIndexFor,
   crossingStripes,
   hash01,
+  lampHandoverWeight,
   laneDashes,
   lampPosts,
   lodDistances,
   planBuilding,
 } from './cityLayout';
 import { SIGNS, TERMINAL_SIGN_CELL } from './cityTextures';
-import { GeometryBatch } from './geometryBatch';
-import { wetSurfaceTargets } from './wetSurface';
+import { FACADE_TILE_U, FACADE_TILE_V, GeometryBatch } from './geometryBatch';
+import { patchWetShader, wetSurfaceTargets } from './wetSurface';
 
 const EPSILON = 1e-9;
 
 function insideAnyBuilding(x: number, z: number): boolean {
   return blocks.some(b => Math.abs(x - b.x) < b.w / 2 && Math.abs(z - b.z) < b.d / 2);
 }
+
+/** Smallest gap between a centred rectangle and any building footprint (negative = overlap). */
+function clearanceFromBuildings(x: number, z: number, halfX: number, halfZ: number): number {
+  let gap = Infinity;
+  for (const b of blocks) {
+    const gapX = Math.abs(x - b.x) - (halfX + b.w / 2);
+    const gapZ = Math.abs(z - b.z) - (halfZ + b.d / 2);
+    gap = Math.min(gap, Math.max(gapX, gapZ));
+  }
+  return gap;
+}
+
+const PROP_CLEARANCE = 0.1;
 
 function distanceToStreet(value: number): number {
   return Math.min(...STREET_LINES.map(line => Math.abs(value - line)));
@@ -66,7 +84,10 @@ test('upper tiers, rooftop plant and signs stay within the physics footprint', (
       assert.ok(sign.y - sign.height / 2 > 2, 'signs hang above head height');
     }
     assert.ok(plan.windowTint >= 0 && plan.windowTint < WINDOW_TINTS);
+    assert.ok(plan.uvScale >= 0.88 && plan.uvScale <= 1.12);
   });
+  const scales = new Set(blocks.map((block, index) => planBuilding(block, index).uvScale.toFixed(2)));
+  assert.ok(scales.size >= 10, 'facade scale varies between buildings');
 });
 
 test('building plans are deterministic and silhouettes vary', () => {
@@ -100,8 +121,76 @@ test('lamp posts stand on pavements, clear of buildings and intersections', () =
     assert.ok(Math.abs(reference.x - (lamp.headX - lamp.x)) < 1e-6);
     assert.ok(Math.abs(reference.z - (lamp.headZ - lamp.z)) < 1e-6);
   }
-  for (const bench of benches(lamps)) assert.ok(!insideAnyBuilding(bench.x, bench.z));
   for (const bollard of bollards()) assert.ok(!insideAnyBuilding(bollard.x, bollard.z));
+});
+
+test('lamp poles and benches keep clear of tower walls and stay on the pavement', () => {
+  const lamps = lampPosts();
+  const pole = LAMP_POLE_WIDTH / 2;
+  for (const lamp of lamps) {
+    const gap = clearanceFromBuildings(lamp.x, lamp.z, pole, pole);
+    assert.ok(gap >= PROP_CLEARANCE, `pole at ${lamp.x}, ${lamp.z} is ${gap.toFixed(3)} m from a wall`);
+  }
+  for (const bench of benches(lamps)) {
+    const acrossX = bench.yaw === 0;
+    const halfX = (acrossX ? BENCH_DEPTH : BENCH_LENGTH) / 2;
+    const halfZ = (acrossX ? BENCH_LENGTH : BENCH_DEPTH) / 2;
+    const gap = clearanceFromBuildings(bench.x, bench.z, halfX, halfZ);
+    assert.ok(gap >= PROP_CLEARANCE, `bench at ${bench.x}, ${bench.z} is ${gap.toFixed(3)} m from a wall`);
+    const across = acrossX ? bench.x : bench.z;
+    assert.ok(distanceToStreet(across) - BENCH_DEPTH / 2 >= ROAD_HALF_WIDTH, 'bench overhangs the kerb');
+  }
+});
+
+test('lamp light handover changes no lamp brightness abruptly while driving past', () => {
+  const lamps = lampPosts();
+  const xs = lamps.map(lamp => lamp.headX);
+  const zs = lamps.map(lamp => lamp.headZ);
+  const lights = 3;
+  const finder = new NearestPoints(lights + 1);
+  const band = 6;
+  const step = 0.2;
+  let previous: Map<number, number> | undefined;
+  let largestJump = 0;
+  for (let z = 170; z >= -170; z -= step) {
+    const indices = finder.find(xs, zs, 4, z);
+    const cutoff = finder.distance(lights);
+    const current = new Map<number, number>();
+    for (let i = 0; i < lights; i++) {
+      current.set(indices[i], lampHandoverWeight(finder.distance(i), cutoff, band));
+    }
+    if (previous) {
+      for (const lamp of new Set([...previous.keys(), ...current.keys()])) {
+        largestJump = Math.max(largestJump, Math.abs((current.get(lamp) ?? 0) - (previous.get(lamp) ?? 0)));
+      }
+    }
+    previous = current;
+  }
+  assert.ok(largestJump < 0.1, `a lamp light jumped by ${largestJump.toFixed(3)} in one ${step} m step`);
+  assert.equal(lampHandoverWeight(3, Infinity, band), 1);
+  assert.equal(lampHandoverWeight(5, 5, band), 0);
+  assert.equal(lampHandoverWeight(0, 10, band), 1);
+});
+
+test('shader hooks the city patches rely on still exist in three', () => {
+  const standard = T.ShaderLib.standard;
+  const wet = { vertexShader: standard.vertexShader, fragmentShader: standard.fragmentShader };
+  patchWetShader(wet);
+  assert.ok(wet.vertexShader.includes('varying vec3 vCityWorld;'), 'vertex <common> hook');
+  assert.ok(wet.vertexShader.includes('vCityWorld = (modelMatrix'), 'vertex <project_vertex> hook');
+  assert.ok(wet.fragmentShader.includes('uniform float uCityWetness;'), 'fragment <common> hook');
+  assert.ok(wet.fragmentShader.includes('cityPuddleMask(vCityWorld.xz)'), 'fragment <roughnessmap_fragment> hook');
+  assert.ok(wet.fragmentShader.includes('nonPerturbedNormal, cityPuddle'), 'fragment <normal_fragment_maps> hook');
+  assert.ok(T.ShaderChunk.normal_fragment_begin.includes('nonPerturbedNormal'), 'nonPerturbedNormal is declared');
+  const roughnessAt = wet.fragmentShader.indexOf('#include <roughnessmap_fragment>');
+  const flattenAt = wet.fragmentShader.indexOf('nonPerturbedNormal, cityPuddle');
+  assert.ok(roughnessAt < flattenAt, 'cityPuddle is declared before the normal is flattened');
+
+  const facade = { vertexShader: standard.vertexShader, fragmentShader: standard.fragmentShader };
+  patchFacadeShader(facade);
+  assert.ok(!facade.fragmentShader.includes('#include <color_fragment>'), 'color_fragment hook');
+  assert.ok(facade.fragmentShader.includes('totalEmissiveRadiance *= vColor;'), 'emissivemap_fragment hook');
+  assert.ok(T.ShaderChunk.color_pars_fragment.includes('vColor'), 'vColor is declared with vertex colours');
 });
 
 test('lane dashes avoid intersections and crossings sit on every approach', () => {
@@ -193,4 +282,14 @@ test('geometry batches merge pieces with outward-facing walls and per-piece colo
   geometry.computeBoundingBox();
   assert.ok(geometry.boundingBox);
   assert.ok(Math.abs(geometry.boundingBox.min.x + 2) < EPSILON, 'pieces are stored relative to the origin');
+});
+
+test('facade UV scale stretches the window tile on both axes', () => {
+  const batch = new GeometryBatch();
+  batch.walls({ x: 0, z: 0, w: 10, d: 10, y0: 0, y1: 11 }, 0, new T.Color(1, 1, 1), 1.1);
+  const geometry = batch.build();
+  assert.ok(geometry);
+  const uv = geometry.getAttribute('uv');
+  assert.ok(Math.abs(uv.getX(1) - 10 / (FACADE_TILE_U * 1.1)) < 1e-6);
+  assert.ok(Math.abs(uv.getY(2) - 11 / (FACADE_TILE_V * 1.1)) < 1e-6);
 });

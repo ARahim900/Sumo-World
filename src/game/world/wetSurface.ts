@@ -65,7 +65,11 @@ float cityPuddleMask(vec2 p) {
 `;
 
 const FRAGMENT_WET = /* glsl */ `
-float cityPuddle = cityPuddleMask(vCityWorld.xz);
+float cityPuddle = 0.0;
+// Uniform branch: skip the noise on dry presets and materials that collect no water.
+if (uCityPuddleThreshold < 1.0 && uCityPuddleStrength > 0.0) {
+  cityPuddle = cityPuddleMask(vCityWorld.xz);
+}
 diffuseColor.rgb *= (1.0 - uCityDarkening) * (1.0 - 0.18 * cityPuddle);
 roughnessFactor = mix(roughnessFactor, roughnessFactor * 0.15 + 0.02, uCityWetness);
 roughnessFactor = mix(roughnessFactor, 0.03, cityPuddle);
@@ -74,6 +78,23 @@ roughnessFactor = mix(roughnessFactor, 0.03, cityPuddle);
 const FRAGMENT_FLATTEN = /* glsl */ `
 normal = normalize(mix(normal, nonPerturbedNormal, cityPuddle));
 `;
+
+/** Vertex and fragment source of a material shader, as handed to onBeforeCompile. */
+export interface ShaderSource {
+  vertexShader: string;
+  fragmentShader: string;
+}
+
+/** Injects the world position, puddle mask, wet roughness and puddle flattening into the shader. */
+export function patchWetShader(shader: ShaderSource): void {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', `#include <common>\n${VERTEX_DECLARATIONS}`)
+    .replace('#include <project_vertex>', `#include <project_vertex>\n${VERTEX_WORLD}`);
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>\n${FRAGMENT_DECLARATIONS}`)
+    .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${FRAGMENT_WET}`)
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${FRAGMENT_FLATTEN}`);
+}
 
 interface PatchedMaterial {
   material: T.MeshStandardMaterial;
@@ -105,13 +126,7 @@ export class WetSurface {
       shader.uniforms.uCityDarkening = this.darkening;
       shader.uniforms.uCityPuddleThreshold = this.puddleThreshold;
       shader.uniforms.uCityPuddleStrength = entry.puddleStrength;
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>\n${VERTEX_DECLARATIONS}`)
-        .replace('#include <project_vertex>', `#include <project_vertex>\n${VERTEX_WORLD}`);
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>\n${FRAGMENT_DECLARATIONS}`)
-        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${FRAGMENT_WET}`)
-        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${FRAGMENT_FLATTEN}`);
+      patchWetShader(shader);
     };
     material.customProgramCacheKey = () => 'city-wet-surface';
     this.patched.push(entry);

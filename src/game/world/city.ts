@@ -4,9 +4,12 @@ import { blocks, DESTINATION } from '../content';
 import { disposeTree } from '../core/dispose';
 import type { FrameContext, GameSystem, SystemInitContext } from '../core/types';
 import {
+  BENCH_DEPTH,
+  BENCH_LENGTH,
   BLOCK_CENTRES,
   CHUNK_GRID,
   LAMP_HEAD_HEIGHT,
+  LAMP_POLE_WIDTH,
   NearestPoints,
   PAVEMENT_HALF,
   benches,
@@ -15,6 +18,7 @@ import {
   chunkIndexFor,
   crossingStripes,
   kerbStrips,
+  lampHandoverWeight,
   laneDashes,
   lampPosts,
   lodDistances,
@@ -25,7 +29,7 @@ import {
 } from './cityLayout';
 import { asphaltTexture, lightPoolTexture, signAtlas, TERMINAL_SIGN_CELL } from './cityTextures';
 import { GeometryBatch } from './geometryBatch';
-import { WetSurface } from './wetSurface';
+import { WetSurface, type ShaderSource } from './wetSurface';
 
 export { signMaterial } from './cityTextures';
 
@@ -47,13 +51,22 @@ const LIGHT_INTENSITY = 24;
 const LIGHT_RANGE = 19;
 const LIGHT_DECAY = 1.6;
 /** Focus movement (metres) before the nearest lamps are searched again. */
-const RELIGHT_DISTANCE = 0.5;
+const RELIGHT_DISTANCE = 0.2;
+/** Distance over which a light fades out before it is handed to the next nearest lamp. */
+const HANDOVER_BAND = 6;
 
 function linear(colour: string, intensity = 1): T.Color {
   return new T.Color(colour).multiplyScalar(intensity);
 }
 
 const IDENTITY = new T.Quaternion();
+
+/** The vertex colour tints only the lit windows, not the daylight albedo. */
+export function patchFacadeShader(shader: ShaderSource): void {
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <color_fragment>', '')
+    .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= vColor;');
+}
 
 /** Facade material whose window glow is tinted per building by the vertex colour. */
 function facadeMaterial(map: T.Texture): T.MeshStandardMaterial {
@@ -66,12 +79,7 @@ function facadeMaterial(map: T.Texture): T.MeshStandardMaterial {
     metalness: 0.2,
     vertexColors: true,
   });
-  material.onBeforeCompile = shader => {
-    // The vertex colour tints only the lit windows, not the daylight albedo.
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <color_fragment>', '')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= vColor;');
-  };
+  material.onBeforeCompile = patchFacadeShader;
   material.customProgramCacheKey = () => 'city-facade';
   return material;
 }
@@ -107,18 +115,17 @@ function groundPropMesh(
 }
 
 /** Pole, arm and lamp head instanced across every lamp post, plus baked light pools. */
-function streetLighting(lamps: readonly LampPost[], root: T.Group): void {
+function streetLights(lamps: readonly LampPost[], root: T.Group, poleMaterial: T.Material): void {
   const poleKit = mergeGeometries([
-    new T.BoxGeometry(0.12, 6, 0.12).translate(0, 3, 0),
+    new T.BoxGeometry(LAMP_POLE_WIDTH, 6, LAMP_POLE_WIDTH).translate(0, 3, 0),
     new T.BoxGeometry(1.8, 0.12, 0.16).translate(-0.8, 6, 0),
   ]);
   if (!poleKit) throw new Error('Lamp pole geometry could not be merged.');
-  const poleMaterial = new T.MeshStandardMaterial({ color: '#323c50', roughness: 0.4, metalness: 0.7 });
-  root.add(groundPropMesh(poleKit, poleMaterial, lamps.map(l => ({ x: l.x, z: l.z, yaw: l.yaw }))));
+  root.add(groundPropMesh(poleKit, poleMaterial, lamps));
 
   const head = new T.BoxGeometry(1, 0.06, 0.3).translate(-1, LAMP_HEAD_HEIGHT, 0);
   const headMaterial = new T.MeshBasicMaterial({ color: linear(LAMP_HEAD_COLOUR, LAMP_HEAD_INTENSITY) });
-  root.add(groundPropMesh(head, headMaterial, lamps.map(l => ({ x: l.x, z: l.z, yaw: l.yaw }))));
+  root.add(groundPropMesh(head, headMaterial, lamps));
 
   const poolMaterial = new T.MeshBasicMaterial({
     map: lightPoolTexture(),
@@ -146,10 +153,19 @@ function streetLighting(lamps: readonly LampPost[], root: T.Group): void {
     pools.setColorAt(i * 2 + 1, colour.set(LAMP_HEAD_COLOUR).multiplyScalar(POOL_STRENGTH * 0.55));
   });
   root.add(pools);
+}
 
-  const graphite = new T.MeshStandardMaterial({ color: '#111827', roughness: 0.4, metalness: 0.5 });
-  root.add(groundPropMesh(new T.BoxGeometry(0.7, 0.7, 1.2).translate(0, 0.42, 0), graphite, benches(lamps)));
-  root.add(groundPropMesh(new T.CylinderGeometry(0.1, 0.13, 0.85, 8).translate(0, 0.52, 0), poleMaterial, bollards()));
+/** Kerbside benches beside the lamps and bollards on every pavement corner. */
+function streetFurniture(
+  lamps: readonly LampPost[],
+  root: T.Group,
+  benchMaterial: T.Material,
+  bollardMaterial: T.Material,
+): void {
+  const bench = new T.BoxGeometry(BENCH_DEPTH, 0.7, BENCH_LENGTH).translate(0, 0.42, 0);
+  root.add(groundPropMesh(bench, benchMaterial, benches(lamps)));
+  const bollard = new T.CylinderGeometry(0.1, 0.13, 0.85, 8).translate(0, 0.52, 0);
+  root.add(groundPropMesh(bollard, bollardMaterial, bollards()));
 }
 
 interface ChunkBatches {
@@ -181,7 +197,7 @@ function buildings(root: T.Group, facade: T.Material, graphite: T.Material, neon
     const chunk = chunks[chunkIndexFor(block.x, block.z)];
     const tint = linear(WINDOW_PALETTE[plan.windowTint], plan.windowLevel);
     plan.tiers.forEach((tier, level) => {
-      chunk.facade.walls(tier, plan.uOffset, tint.clone().multiplyScalar(1 + level * 0.08));
+      chunk.facade.walls(tier, plan.uOffset, tint.clone().multiplyScalar(1 + level * 0.08), plan.uvScale);
     });
     for (const cap of plan.caps) chunk.graphite.box(cap);
     for (const unit of plan.rooftop) chunk.graphite.box(unit);
@@ -366,7 +382,9 @@ export async function createCity(maxAnisotropy = 4): Promise<City> {
   root.add(markingMesh(crossingStripes(), 0.02, stripe));
 
   const lamps = lampPosts();
-  streetLighting(lamps, root);
+  const poleMaterial = new T.MeshStandardMaterial({ color: '#323c50', roughness: 0.4, metalness: 0.7 });
+  streetLights(lamps, root, poleMaterial);
+  streetFurniture(lamps, root, graphite, poleMaterial);
   const chunks = buildings(root, facade, graphite, neon);
 
   const marker = missionMarker();
@@ -388,7 +406,8 @@ export async function createCity(maxAnisotropy = 4): Promise<City> {
 
 /**
  * Adds the city to the scene, keeps mission markers in step with progress, moves the three
- * real lamp lights to the lamps nearest the focus and mirrors weather wetness onto the road.
+ * real lamp lights to the lamps nearest the focus (fading each one out before it is handed
+ * to another lamp) and mirrors weather wetness onto the road.
  */
 export class CitySystem implements GameSystem {
   readonly name = 'city';
@@ -397,7 +416,8 @@ export class CitySystem implements GameSystem {
   private lampX = new Float32Array(0);
   private lampZ = new Float32Array(0);
   private readonly lampColours: T.Color[] = [];
-  private readonly nearest = new NearestPoints(DYNAMIC_LIGHT_COUNT);
+  /** One more than the light count: the extra slot is the cutoff the lights fade against. */
+  private readonly nearest = new NearestPoints(DYNAMIC_LIGHT_COUNT + 1);
   private readonly lightColours: Record<NeonColour, T.Color> = {
     cyan: new T.Color(LAMP_LIGHT_COLOURS.cyan),
     pink: new T.Color(LAMP_LIGHT_COLOURS.pink),
@@ -474,12 +494,17 @@ export class CitySystem implements GameSystem {
     this.focusX = x;
     this.focusZ = z;
     const indices = this.nearest.find(this.lampX, this.lampZ, x, z);
+    const cutoff = this.nearest.distance(DYNAMIC_LIGHT_COUNT);
     for (let i = 0; i < this.city.lights.length; i++) {
       const light = this.city.lights[i];
       const lamp = indices[i];
-      if (lamp < 0) continue;
+      if (lamp < 0) {
+        light.intensity = 0;
+        continue;
+      }
       light.position.set(this.lampX[lamp], LIGHT_HEIGHT, this.lampZ[lamp]);
       light.color.copy(this.lampColours[lamp]);
+      light.intensity = LIGHT_INTENSITY * lampHandoverWeight(this.nearest.distance(i), cutoff, HANDOVER_BAND);
     }
   }
 }

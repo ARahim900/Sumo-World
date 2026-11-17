@@ -42,8 +42,9 @@ export class GeometryBatch {
   /**
    * Adds the four walls of a tier with world-space facade UVs that wrap continuously around
    * the perimeter (so windows turn the corner), plus a flat roof sampling a dark panel texel.
+   * `uvScale` stretches the facade tile so storeys and bays vary in size between buildings.
    */
-  walls(tier: Tier, uOffset: number, colour: T.Color, roof = true): void {
+  walls(tier: Tier, uOffset: number, colour: T.Color, uvScale = 1, roof = true): void {
     const x0 = tier.x - tier.w / 2;
     const x1 = tier.x + tier.w / 2;
     const z0 = tier.z - tier.d / 2;
@@ -54,6 +55,8 @@ export class GeometryBatch {
     const uvs: number[] = [];
     const indices: number[] = [];
     let perimeter = uOffset;
+    const tileU = FACADE_TILE_U * uvScale;
+    const tileV = FACADE_TILE_V * uvScale;
 
     const quad = (corners: readonly Vec3[], normal: Vec3, faceUvs: readonly number[]) => {
       const base = positions.length / 3;
@@ -66,10 +69,10 @@ export class GeometryBatch {
     };
 
     const wall = (a: Vec3, b: Vec3, length: number, normal: Vec3) => {
-      const u0 = perimeter / FACADE_TILE_U;
-      const u1 = (perimeter + length) / FACADE_TILE_U;
-      const v0 = y0 / FACADE_TILE_V;
-      const v1 = y1 / FACADE_TILE_V;
+      const u0 = perimeter / tileU;
+      const u1 = (perimeter + length) / tileU;
+      const v0 = y0 / tileV;
+      const v1 = y1 / tileV;
       quad(
         [
           [a[0], y0, a[2]],

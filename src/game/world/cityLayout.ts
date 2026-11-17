@@ -17,8 +17,21 @@ export const PAVEMENT_HALF = 22;
 /** Centres of the 6 x 6 pavement blocks on each axis. */
 export const BLOCK_CENTRES: readonly number[] = [-150, -90, -30, 30, 90, 150];
 
-/** Distance from a street's centre line to its lamp poles. */
-export const LAMP_OFFSET = 9;
+/**
+ * Distance from a street's centre line to its lamp poles. The kerb is at 8 m and the nearest
+ * frontage at 9 m (block offset 11 m, widths up to 20 m), so the pole stands in that strip.
+ */
+export const LAMP_OFFSET = 8.7;
+
+/** Square cross-section of a lamp pole. */
+export const LAMP_POLE_WIDTH = 0.12;
+
+/** Bench footprint: depth across the pavement and length along the street. */
+export const BENCH_DEPTH = 0.7;
+export const BENCH_LENGTH = 1.2;
+
+/** How far a bench sits from its pole towards the kerb, so it fits between kerb and frontage. */
+const BENCH_INSET = 0.2;
 
 /** Lamp spacing along a street. */
 export const LAMP_SPACING = 24;
@@ -117,6 +130,8 @@ export interface BuildingPlan {
   windowLevel: number;
   /** Horizontal facade texture offset in metres so neighbouring towers do not line up. */
   uOffset: number;
+  /** Facade texture scale around 1, so storey heights and bay widths differ between towers. */
+  uvScale: number;
 }
 
 /** Number of window palette entries the plan may index. */
@@ -184,8 +199,8 @@ export function benches(lamps: readonly LampPost[]): GroundProp[] {
     const lamp = lamps[i];
     const awayX = lamp.x - lamp.headX;
     const awayZ = lamp.z - lamp.headZ;
-    if (awayX !== 0) props.push({ x: lamp.x - awayX * 0.45, z: lamp.z + 3, yaw: 0 });
-    else props.push({ x: lamp.x + 3, z: lamp.z - awayZ * 0.45, yaw: Math.PI / 2 });
+    if (awayX !== 0) props.push({ x: lamp.x - awayX * BENCH_INSET, z: lamp.z + 3, yaw: 0 });
+    else props.push({ x: lamp.x + 3, z: lamp.z - awayZ * BENCH_INSET, yaw: Math.PI / 2 });
   }
   return props;
 }
@@ -426,6 +441,7 @@ export function planBuilding(block: Block, index: number): BuildingPlan {
     windowTint: Math.floor(hash01(index, 71) * WINDOW_TINTS),
     windowLevel: dim ? 0.45 : 0.8 + hash01(index, 72) * 0.5,
     uOffset: hash01(index, 73) * 40,
+    uvScale: 0.88 + hash01(index, 74) * 0.24,
   };
 }
 
@@ -464,6 +480,17 @@ export function lodDistances(drawDistance: number): LodDistances {
   };
 }
 
+/**
+ * Intensity 0..1 for a dynamic lamp light at `distance` from the focus, where `cutoff` is the
+ * distance to the nearest lamp left unlit. The weight reaches zero as the two distances meet,
+ * so handing a light over to a different lamp never makes the lit pool pop.
+ */
+export function lampHandoverWeight(distance: number, cutoff: number, band: number): number {
+  if (!Number.isFinite(cutoff)) return 1;
+  const t = Math.min(1, Math.max(0, (cutoff - distance) / band));
+  return t * t * (3 - 2 * t);
+}
+
 /** Finds the k nearest points to a position without allocating per call. */
 export class NearestPoints {
   private readonly indices: number[];
@@ -472,6 +499,11 @@ export class NearestPoints {
   constructor(readonly count: number) {
     this.indices = new Array<number>(count).fill(-1);
     this.distances = new Array<number>(count).fill(Infinity);
+  }
+
+  /** Distance to the point in `slot` from the last search; Infinity for an unused slot. */
+  distance(slot: number): number {
+    return Math.sqrt(this.distances[slot]);
   }
 
   /** Returns indices of the nearest points, closest first; unused slots are -1. */
