@@ -1,20 +1,256 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Runtime } from '../game/core/runtime';
 import { initialSnapshot } from '../game/core/snapshot';
-import type { Snapshot } from '../game/core/types';
-function Minimap({ state }: { state: Snapshot }) {
-  const px = (x: number) => 90 + x * .42; const pz = (z: number) => 90 + z * .42;
-  return <div className="minimap"><svg viewBox="0 0 180 180" role="img" aria-label="District map showing your position and the destination"><defs><pattern id="streets" width="25.2" height="25.2" x="1.8" y="1.8" patternUnits="userSpaceOnUse"><rect width="25.2" height="25.2" fill="#182735"/><rect x="4" y="4" width="17.2" height="17.2" fill="#080f1b"/></pattern></defs><rect width="180" height="180" fill="url(#streets)"/><path d="M91.68 100.08 L91.68 46.32" stroke="#55e9da" strokeWidth="2" fill="none" opacity=".8"/><circle cx="91.68" cy="46.32" r="4" fill="none" stroke="#65ffca" strokeWidth="2"/><g transform={`translate(${px(state.x)} ${pz(state.z)}) rotate(${-state.yaw * 180 / Math.PI})`}><path d="M0 6 L-4 -4 L0 -2 L4 -4 Z" fill="white"/></g></svg><span>N</span><small>HIKARI DISTRICT</small></div>;
+import type { QualityPreset, Snapshot, WeatherSetting } from '../game/core/types';
+import { DebugOverlay } from './debug-overlay';
+import { Hud } from './hud';
+import {
+  LOAD_STAGES,
+  debugRequested,
+  defaultSettings,
+  isTouchOnly,
+  loadLabel,
+  loadProgress,
+  loadSettings,
+  saveSettings,
+  type GameSettings,
+  type LoadStage,
+} from './settings';
+import { SettingsPanel } from './settings-panel';
+
+/** Accessing localStorage itself throws when site data is blocked. */
+function browserStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
 }
-function Hud({ state, pause }: { state: Snapshot; pause: () => void }) {
-  const title = state.mission === 'enter' ? 'Your night starts here.' : state.mission === 'complete' ? 'Destination reached.' : state.distance < 5 ? 'Stop in the marked area.' : 'Drive to the transit terminal.';
-  return <><header className="top"><a className="wordmark" href="/" aria-label="Sumo World home">SUMO<span>WORLD</span></a><div className="weather"><i/>{state.rain ? 'RAIN' : 'CLEAR'}<b>HIKARI / NIGHT</b><button onClick={pause} aria-label="Pause game">Ⅱ</button></div></header><section className="mission"><div className="mission-meta"><span className="diamond"/>{state.mission === 'complete' ? 'MISSION COMPLETE' : 'NIGHT DRIVE'}<span>{state.mission === 'enter' ? '01 / 03' : state.mission === 'complete' ? '03 / 03' : '02 / 03'}</span></div><h1>{title}</h1><p>{state.mission === 'enter' ? 'Approach the silver coupe. Press F to enter.' : state.mission === 'complete' ? 'Keep exploring. Every street is yours.' : `${Math.round(state.distance)} m to destination · Follow the cyan road markers`}</p>{state.hold > 0 && state.mission !== 'complete' && <progress max="1" value={state.hold} aria-label="Stopping at destination"/>}</section><Minimap state={state}/><div className="speed"><span>{state.driving ? 'SUMO GT' : state.firstPerson ? 'FIRST PERSON' : 'ON FOOT'}</span><div>{state.driving ? Math.round(state.speed).toString().padStart(3, '0') : '—'}<small>{state.driving ? 'KM/H' : 'EXPLORE'}</small></div><div className="speed-line"><i style={{width: `${Math.min(100, state.speed / 1.5)}%`}}/></div></div>{state.prompt && <div className="prompt"><kbd>F</kbd>{state.prompt}</div>}{state.notice && <div className="notice" role="status">{state.notice}</div>}<footer className="controls"><span><kbd>W A S D</kbd>{state.driving ? 'Drive' : 'Walk'}</span><span><kbd>{state.driving ? 'SPACE' : 'SHIFT'}</kbd>{state.driving ? 'Handbrake' : 'Sprint'}</span><span><kbd>{state.driving ? 'C' : 'V'}</kbd>{state.driving ? 'Look behind' : 'Camera'}</span><span><kbd>R</kbd>Recover</span><span><kbd>ESC</kbd>Pause</span></footer></>;
+
+function nextFrame(): Promise<void> {
+  return new Promise(resolve => requestAnimationFrame(() => resolve()));
 }
+
+function LoadingStatus({ stage }: { stage: LoadStage }) {
+  const step = Math.min(LOAD_STAGES.indexOf(stage) + 1, LOAD_STAGES.length - 1);
+  const percent = Math.round(loadProgress(stage) * 100);
+  return (
+    <div className="loading" role="status" aria-live="polite">
+      <div className="loading-label">
+        <span>{loadLabel(stage)}…</span>
+        <span>{`Step ${step} of ${LOAD_STAGES.length - 1}`}</span>
+      </div>
+      <progress max={100} value={percent} aria-label="Loading progress" />
+    </div>
+  );
+}
+
+interface MenuProps {
+  state: Snapshot;
+  started: boolean;
+  error: string;
+  stage: LoadStage;
+  touchOnly: boolean;
+  onPlay: () => void;
+  onRecover: () => void;
+  onRestart: () => void;
+  settings: ReactNode;
+}
+
+function menuTitle(error: string, started: boolean): string {
+  if (error) return 'The city needs a restart.';
+  return started ? 'Take a breath.' : 'The city is yours.';
+}
+
+function menuCopy(error: string, started: boolean): string {
+  if (error) return error;
+  if (started) return 'Your drive will be waiting.';
+  return 'Rain on the asphalt. Neon in the rear-view.\nFind your ride and disappear into the night.';
+}
+
+function primaryLabel(state: Snapshot, started: boolean, error: string): string {
+  if (error) return 'Reload game';
+  if (!state.ready) return 'Building the city…';
+  return started ? 'Resume drive' : 'Enter Sumo World';
+}
+
+function Menu(props: MenuProps) {
+  const { state, started, error, stage, touchOnly, onPlay, onRecover, onRestart, settings } = props;
+  const loading = !error && !state.ready;
+  return (
+    <div className={`overlay ${started ? 'paused' : ''}`}>
+      <div className="menu">
+        <div className="menu-brand">SUMO<span>WORLD</span></div>
+        <div className="menu-rule" />
+        <h1>{menuTitle(error, started)}</h1>
+        <p>{menuCopy(error, started)}</p>
+        {touchOnly && (
+          <div className="touch-notice" role="note">
+            <strong>Desktop only for now.</strong> Sumo World needs a keyboard and mouse or a
+            standard gamepad. Touch controls are not supported yet.
+          </div>
+        )}
+        {loading && <LoadingStatus stage={stage} />}
+        <button
+          type="button"
+          className="primary"
+          onClick={error ? () => window.location.reload() : onPlay}
+          disabled={loading}
+          autoFocus={started}
+        >
+          {primaryLabel(state, started, error)}
+          <span aria-hidden="true">↗</span>
+        </button>
+        {started && !error && (
+          <div className="menu-actions">
+            <button type="button" onClick={onRecover}>Recover at garage</button>
+            <button type="button" onClick={onRestart}>Restart mission</button>
+          </div>
+        )}
+        {!error && settings}
+        <div className="menu-help">
+          <span><kbd>W A S D</kbd> Move / drive</span>
+          <span><kbd>F</kbd> Enter / exit</span>
+          <span><kbd>MOUSE</kbd> Click scene to look</span>
+        </div>
+        <small className="desktop-note">Desktop game · Keyboard + mouse or standard gamepad</small>
+      </div>
+      <div className="edition">HIKARI DISTRICT<span>AFTER DARK</span></div>
+    </div>
+  );
+}
+
 export default function Page() {
-  const host = useRef<HTMLDivElement>(null); const runtime = useRef<Runtime | null>(null);
-  const [state, setState] = useState(initialSnapshot); const [error, setError] = useState(''); const [started, setStarted] = useState(false);
-  useEffect(() => { let cancelled = false; let instance: Runtime | undefined; import('../game/core/runtime').then(async ({ Runtime: Game }) => { if (cancelled || !host.current) return; instance = new Game(host.current, setState, setError); runtime.current = instance; await instance.initialise(); }).catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Unable to load the city'); }); return () => { cancelled = true; instance?.dispose(); runtime.current = null; }; }, []);
-  const play = () => { setStarted(true); runtime.current?.start(); };
-  return <main className="game" data-fps={Math.round(state.fps)} data-x={state.x.toFixed(2)} data-z={state.z.toFixed(2)}><div className="viewport" ref={host} aria-label="Sumo World 3D game"/><div className="vignette"/>{started && !error && <Hud state={state} pause={() => runtime.current?.pause()}/>}{(!started || state.paused || error) && <div className={`overlay ${started ? 'paused' : ''}`}><div className="menu"><div className="menu-brand">SUMO<span>WORLD</span></div><div className="menu-rule"/><h1>{error ? 'The city needs a restart.' : started ? 'Take a breath.' : 'The city is yours.'}</h1><p>{error || (started ? 'Your drive will be waiting.' : 'Rain on the asphalt. Neon in the rear-view.\nFind your ride and disappear into the night.')}</p><button className="primary" onClick={error ? () => window.location.reload() : play} disabled={!state.ready && !error}>{error ? 'Reload game' : !state.ready ? 'Building the city…' : started ? 'Resume drive' : 'Enter Sumo World'}<span>↗</span></button>{started && !error && <div className="menu-actions"><button onClick={() => runtime.current?.recover()}>Recover at garage</button><button onClick={() => runtime.current?.restart()}>Restart mission</button></div>}<div className="settings"><button disabled={!state.ready} onClick={() => runtime.current?.toggleRain()}>Rain <b>{state.rain ? 'ON' : 'OFF'}</b></button><button disabled={!state.ready} onClick={() => runtime.current?.toggleSound()}>Engine audio <b>{state.sound ? 'ON' : 'OFF'}</b></button></div><div className="menu-help"><span><kbd>W A S D</kbd> Move / drive</span><span><kbd>F</kbd> Enter / exit</span><span><kbd>MOUSE</kbd> Click scene to look</span></div><small className="desktop-note">Desktop prototype · Keyboard + mouse or standard gamepad</small></div><div className="edition">HIKARI DISTRICT<span>AFTER DARK</span></div></div>}</main>;
+  const host = useRef<HTMLDivElement>(null);
+  const runtime = useRef<Runtime | null>(null);
+  const applied = useRef(false);
+  const [api, setApi] = useState<Runtime | null>(null);
+  const [state, setState] = useState<Snapshot>(initialSnapshot);
+  const [error, setError] = useState('');
+  const [started, setStarted] = useState(false);
+  const [stage, setStage] = useState<LoadStage>('download');
+  const [settings, setSettings] = useState<GameSettings | null>(null);
+  const [touchOnly, setTouchOnly] = useState(false);
+  const [debug, setDebug] = useState(false);
+
+  useEffect(() => {
+    const match = (query: string) => window.matchMedia(query).matches;
+    const reducedMotion = match('(prefers-reduced-motion: reduce)');
+    setSettings(loadSettings(browserStorage(), defaultSettings(reducedMotion)));
+    setTouchOnly(isTouchOnly(match));
+    setDebug(debugRequested(window.location.search));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let instance: Runtime | undefined;
+    const boot = async () => {
+      const { Runtime: Game } = await import('../game/core/runtime');
+      if (cancelled || !host.current) return;
+      setStage('graphics');
+      await nextFrame();
+      if (cancelled || !host.current) return;
+      instance = new Game(host.current, setState, setError);
+      runtime.current = instance;
+      setApi(instance);
+      setStage('city');
+      await instance.initialise();
+      if (!cancelled) setStage('ready');
+    };
+    boot().catch((reason: unknown) => {
+      if (!cancelled) setError(reason instanceof Error ? reason.message : 'Unable to load the city');
+    });
+    return () => {
+      cancelled = true;
+      instance?.dispose();
+      runtime.current = null;
+      applied.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const game = runtime.current;
+    if (!state.ready || !game || !settings || applied.current) return;
+    applied.current = true;
+    if (settings.quality !== state.quality) game.setQuality(settings.quality);
+    if (settings.weather !== state.weatherSetting) game.setWeather(settings.weather);
+    if (settings.lowMotion !== state.lowMotion) game.toggleMotion();
+  }, [state.ready, state.quality, state.weatherSetting, state.lowMotion, settings]);
+
+  const remember = (patch: Partial<GameSettings>) => {
+    const next = { ...(settings ?? defaultSettings()), ...patch };
+    setSettings(next);
+    saveSettings(browserStorage(), next);
+  };
+
+  const play = () => {
+    const game = runtime.current;
+    if (!game) return;
+    setStarted(true);
+    game.start();
+    // Browsers only allow audio to start from a user gesture, so a saved "sound on" is
+    // restored here rather than when the city finishes loading.
+    if (settings?.sound && !state.sound) game.toggleSound();
+  };
+
+  const changeQuality = (preset: QualityPreset) => {
+    runtime.current?.setQuality(preset);
+    remember({ quality: preset });
+  };
+
+  const changeWeather = (setting: WeatherSetting) => {
+    runtime.current?.setWeather(setting);
+    remember({ weather: setting });
+  };
+
+  const toggleLowMotion = () => {
+    runtime.current?.toggleMotion();
+    remember({ lowMotion: !state.lowMotion });
+  };
+
+  const toggleSound = () => {
+    runtime.current?.toggleSound();
+    remember({ sound: !state.sound });
+  };
+
+  const showMenu = !started || state.paused || Boolean(error);
+  const classes = ['game'];
+  if (state.lowMotion) classes.push('low-motion');
+
+  return (
+    <main
+      className={classes.join(' ')}
+      data-fps={Math.round(state.fps)}
+      data-x={state.x.toFixed(2)}
+      data-z={state.z.toFixed(2)}
+      data-ready={state.ready ? 'true' : 'false'}
+    >
+      <div className="viewport" ref={host} aria-label="Sumo World 3D game" />
+      <div className="vignette" />
+      {started && !error && <Hud state={state} onPause={() => runtime.current?.pause()} />}
+      {debug && <DebugOverlay api={api} state={state} />}
+      {showMenu && (
+        <Menu
+          state={state}
+          started={started}
+          error={error}
+          stage={stage}
+          touchOnly={touchOnly}
+          onPlay={play}
+          onRecover={() => runtime.current?.recover()}
+          onRestart={() => runtime.current?.restart()}
+          settings={
+            <SettingsPanel
+              state={state}
+              onQuality={changeQuality}
+              onWeather={changeWeather}
+              onLowMotion={toggleLowMotion}
+              onSound={toggleSound}
+            />
+          }
+        />
+      )}
+    </main>
+  );
 }
