@@ -1,13 +1,46 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Quaternion, Vector3 } from 'three';
 import { blocks, SPAWN, STEP, arrivalEligible, type Intent, type Mission } from './content';
-import type { VehicleTelemetry, WheelState } from './core/types';
+import type { VehicleTelemetry, WheelState, WheelQuad } from './core/types';
+import { Powertrain, REVERSE_SPEED_LIMIT, WHEEL_RADIUS } from './vehicle/drivetrain';
+import {
+  DOWNFORCE_FRONT_SHARE,
+  HANDBRAKE_GRIP,
+  HANDBRAKE_LATERAL,
+  PARKING_LATERAL_GRIP,
+  TRACTION_CONTROL_SHARE,
+  aeroDrag,
+  baseLateralGrip,
+  brakeDemand,
+  downforce,
+  driftAssistShare,
+  frictionCircleShare,
+  lateralGripShare,
+  rollingResistance,
+  tractionLimit,
+} from './vehicle/forces';
 
 /** Grip used until the weather system supplies one; matches the default drizzle weather. */
 export const DEFAULT_GRIP = 0.88;
 
 const PLAYER_START = { x: 7, y: 1, z: 24 };
 const SUSPENSION_REST = 0.32;
+const PEDAL_DEADZONE = 0.05;
+const MOVING_SPEED = 0.5;
+
+/** Brake impulse per wheel and step that holds a parked car, N·s (the original value). */
+const PARKING_BRAKE_IMPULSE = 110;
+/** Brake force per wheel that stops a car in drive from creeping at rest, N. */
+const STANDSTILL_HOLD_FORCE = 600;
+const STANDSTILL_SPEED = 0.3;
+
+/** Counter-roll torque per radian of body roll, N·m/rad. */
+const ROLL_STIFFNESS = 6000;
+/** Counter-roll torque per rad/s of roll rate, N·m·s/rad. */
+const ROLL_DAMPING = 600;
+/** Yaw damping at full drift assist, N·m·s/rad. */
+const DRIFT_ASSIST_DAMPING = 2500;
+
 const UP = new Vector3(0, 1, 0);
 const FORWARD = new Vector3(0, 0, 1);
 const RIGHT = new Vector3(-1, 0, 0);
@@ -21,6 +54,15 @@ const scratchSpin = new Vector3();
 const scratchRotation = new Quaternion();
 const scratchSteer = new Quaternion();
 
+const stepRotation = new Quaternion();
+const stepVelocity = new Vector3();
+const stepForward = new Vector3();
+const stepUp = new Vector3();
+const stepAxis = new Vector3();
+const stepForce = new Vector3();
+const stepPoint = new Vector3();
+const stepSide = new Vector3();
+
 export class Simulation {
   world: RAPIER.World;
   car: RAPIER.RigidBody;
@@ -28,6 +70,7 @@ export class Simulation {
   capsule: RAPIER.Collider;
   controller: RAPIER.KinematicCharacterController;
   vehicle: RAPIER.DynamicRayCastVehicleController;
+  readonly powertrain = new Powertrain();
   driving = false;
   mission: Mission = 'enter';
   hold = 0;
@@ -53,6 +96,10 @@ export class Simulation {
     new Vector3(0.89, 0.02, -1.38),
   ];
   private grip = DEFAULT_GRIP;
+  /** Drive demand passed to the powertrain on the last step (throttle, or pedal in reverse). */
+  private demand = 0;
+  private reverseSelected = false;
+  private readonly slips: WheelQuad = [0, 0, 0, 0];
 
   static async create() {
     await RAPIER.init();
@@ -69,11 +116,12 @@ export class Simulation {
       this.solid(0, 2, s * 199, 400, 4, 2);
     }
 
+    // Drag and rolling resistance are modelled explicitly, so the body has no linear damping.
     this.car = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(SPAWN.x, SPAWN.y, SPAWN.z)
         .setRotation({ x: 0, y: 1, z: 0, w: 0 })
-        .setLinearDamping(0.12)
+        .setLinearDamping(0)
         .setAngularDamping(0.5)
         .setCcdEnabled(true),
     );
@@ -90,7 +138,7 @@ export class Simulation {
     this.vehicle.indexUpAxis = 1;
     this.vehicle.setIndexForwardAxis = 2;
     for (const anchor of this.wheelAnchors) {
-      this.vehicle.addWheel(anchor, { x: 0, y: -1, z: 0 }, { x: -1, y: 0, z: 0 }, SUSPENSION_REST, 0.36);
+      this.vehicle.addWheel(anchor, { x: 0, y: -1, z: 0 }, { x: -1, y: 0, z: 0 }, SUSPENSION_REST, WHEEL_RADIUS);
     }
     for (let i = 0; i < 4; i++) {
       this.vehicle.setWheelSuspensionStiffness(i, 38);
@@ -98,7 +146,7 @@ export class Simulation {
       this.vehicle.setWheelSuspensionRelaxation(i, 4.8);
       this.vehicle.setWheelMaxSuspensionTravel(i, 0.22);
       this.vehicle.setWheelMaxSuspensionForce(i, 18000);
-      this.vehicle.setWheelFrictionSlip(i, 3.5);
+      this.vehicle.setWheelFrictionSlip(i, PARKING_LATERAL_GRIP * this.grip);
       this.vehicle.setWheelSideFrictionStiffness(i, 1.7);
     }
 
@@ -211,9 +259,12 @@ export class Simulation {
     this.car.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.car.resetForces(true);
     this.car.resetTorques(true);
+    this.powertrain.reset();
     this.hold = 0;
     this.speed = 0;
     this.steering = 0;
+    this.demand = 0;
+    this.reverseSelected = false;
     this.brakeHeld = false;
     this.brakeToStop = false;
     if (restart) {
@@ -233,43 +284,33 @@ export class Simulation {
     this.noticeTime = Math.max(0, this.noticeTime - STEP);
     if (!this.driving) this.walk(input);
 
-    const velocity = scratchVelocity.copy(this.car.linvel());
-    const forward = scratchForward.copy(FORWARD).applyQuaternion(scratchRotation.copy(this.car.rotation()));
+    const rotation = stepRotation.copy(this.car.rotation());
+    const velocity = stepVelocity.copy(this.car.linvel());
+    const forward = stepForward.copy(FORWARD).applyQuaternion(rotation);
     this.signedSpeed = velocity.dot(forward);
     this.speed = Math.hypot(velocity.x, velocity.z);
+    for (let i = 0; i < 4; i++) this.slips[i] = this.wheelSlip(i);
 
     const targetSteer = (this.driving ? input.steer : 0) * Math.max(0.16, 0.48 - this.speed * 0.009);
     this.steering += (targetSteer - this.steering) * (1 - Math.exp(-5 * STEP));
 
-    if (input.brake > 0.05 && !this.brakeHeld) this.brakeToStop = this.signedSpeed > 0.5;
-    this.brakeHeld = input.brake > 0.05;
+    if (input.brake > PEDAL_DEADZONE && !this.brakeHeld) this.brakeToStop = this.signedSpeed > MOVING_SPEED;
+    this.brakeHeld = input.brake > PEDAL_DEADZONE;
     if (!this.brakeHeld) this.brakeToStop = false;
 
     this.throttle = this.driving ? input.throttle : 0;
     this.brake = this.driving ? input.brake : 0;
     this.handbrake = this.driving && input.handbrake;
 
-    let force = 0;
-    let brake = this.driving ? 0 : 110;
-    if (this.driving) {
-      if (input.brake > 0.05) {
-        if (this.signedSpeed > 0.5 || this.brakeToStop) brake = input.brake * 160;
-        else if (this.signedSpeed > -9) force = -input.brake * 1700;
-      } else if (input.throttle > 0.05) {
-        if (this.signedSpeed < -0.5) brake = input.throttle * 160;
-        else force = input.throttle * 2600 * Math.max(0.05, 1 - this.speed / 48);
-      } else {
-        brake = 2;
-      }
-    }
+    const servicePedal = this.applyPedals();
+    const driveForce = this.powertrain.step(STEP, {
+      signedSpeed: this.signedSpeed,
+      demand: this.demand,
+      reverse: this.reverseSelected,
+    });
+    this.applyWheelForces(this.driving ? driveForce : 0, servicePedal);
+    this.applyBodyForces(rotation, velocity, forward);
 
-    for (let i = 0; i < 4; i++) {
-      const rearHandbrake = this.handbrake && i >= 2;
-      this.vehicle.setWheelSteering(i, i < 2 ? this.steering : 0);
-      this.vehicle.setWheelEngineForce(i, force);
-      this.vehicle.setWheelBrake(i, rearHandbrake ? 180 : brake);
-      this.vehicle.setWheelFrictionSlip(i, (rearHandbrake ? 1.15 : 3.5) * this.grip);
-    }
     this.vehicle.updateVehicle(
       STEP,
       RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
@@ -319,10 +360,12 @@ export class Simulation {
     return Math.abs(hubVelocity.dot(side)) / Math.max(1, Math.abs(hubVelocity.dot(heading)));
   }
 
-  /** Fills the physics-owned fields of `out`; rpm and gear come from the drivetrain. */
+  /** Fills `out` from the simulated car, including rpm and gear from the powertrain. */
   readTelemetry(out: VehicleTelemetry) {
     out.speed = this.speed;
     out.signedSpeed = this.signedSpeed;
+    out.rpm = this.powertrain.rpm;
+    out.gear = this.driving ? this.powertrain.telemetryGear(this.signedSpeed, this.demand) : 0;
     out.throttle = this.throttle;
     out.brake = this.brake;
     out.handbrake = this.handbrake;
@@ -331,6 +374,121 @@ export class Simulation {
 
   dispose() {
     this.world.free();
+  }
+
+  /**
+   * Maps the pedals to drive demand and service brake, and selects reverse: a fresh brake
+   * press at rest drives backwards, and throttle while rolling backwards brakes first.
+   * Returns the service-brake pedal (0..1) and stores the drive demand.
+   */
+  private applyPedals(): number {
+    this.demand = 0;
+    if (!this.driving) return 0;
+    if (this.brake > PEDAL_DEADZONE) {
+      if (this.signedSpeed > MOVING_SPEED || this.brakeToStop) {
+        this.reverseSelected = false;
+        return this.brake;
+      }
+      if (this.signedSpeed > -REVERSE_SPEED_LIMIT) {
+        this.reverseSelected = true;
+        this.demand = this.brake;
+      }
+      return 0;
+    }
+    if (this.throttle > PEDAL_DEADZONE) {
+      if (this.signedSpeed < -MOVING_SPEED) return this.throttle;
+      this.reverseSelected = false;
+      this.demand = this.throttle;
+    }
+    return 0;
+  }
+
+  /**
+   * Sets engine force, brake impulse and lateral grip on each wheel. Longitudinal forces are
+   * capped by each tyre's load and the weather grip (traction control and ABS), and lateral
+   * grip falls once a tyre slides or is busy with traction, which is what allows drifts.
+   */
+  private applyWheelForces(driveForce: number, servicePedal: number) {
+    const vehicle = this.vehicle;
+    for (let i = 0; i < 4; i++) {
+      const front = i < 2;
+      const load = vehicle.wheelIsInContact(i) ? (vehicle.wheelSuspensionForce(i) ?? 0) : 0;
+      const limit = tractionLimit(load, this.grip);
+      const handbraked = !front && this.handbrake;
+      let engine = 0;
+      let brakeForce = 0;
+      let usage = 0;
+
+      if (!this.driving) {
+        brakeForce = PARKING_BRAKE_IMPULSE / STEP;
+      } else if (handbraked) {
+        brakeForce = HANDBRAKE_GRIP * limit;
+        usage = 1;
+      } else if (servicePedal > 0) {
+        brakeForce = Math.min(brakeDemand(servicePedal, front), limit);
+        usage = limit > 0 ? brakeForce / limit : 0;
+      } else if (!front && driveForce !== 0) {
+        const tractionCap = limit * TRACTION_CONTROL_SHARE;
+        engine = Math.max(-tractionCap, Math.min(tractionCap, driveForce / 2));
+        usage = limit > 0 ? Math.abs(engine) / limit : 0;
+      } else if (this.demand === 0 && this.speed < STANDSTILL_SPEED) {
+        brakeForce = STANDSTILL_HOLD_FORCE;
+      }
+
+      let lateral = baseLateralGrip(this.speed) * this.grip * lateralGripShare(this.slips[i], this.speed);
+      lateral *= frictionCircleShare(usage, this.speed);
+      if (handbraked) lateral *= HANDBRAKE_LATERAL;
+
+      vehicle.setWheelSteering(i, front ? this.steering : 0);
+      vehicle.setWheelEngineForce(i, engine);
+      vehicle.setWheelBrake(i, brakeForce * STEP);
+      vehicle.setWheelFrictionSlip(i, lateral);
+    }
+  }
+
+  /** Drag, rolling resistance, downforce, counter-roll torque and drift assist on the body. */
+  private applyBodyForces(rotation: Quaternion, velocity: Vector3, forward: Vector3) {
+    const car = this.car;
+    const wake = this.driving;
+    car.resetForces(false);
+    car.resetTorques(false);
+
+    let contacts = 0;
+    for (let i = 0; i < 4; i++) if (this.vehicle.wheelIsInContact(i)) contacts++;
+
+    const airSpeed = velocity.length();
+    if (airSpeed > 0.01) {
+      const rolling = contacts > 0 ? rollingResistance(car.mass(), airSpeed) : 0;
+      const resistance = aeroDrag(airSpeed) + rolling;
+      car.addForce(stepForce.copy(velocity).multiplyScalar(-resistance / airSpeed), wake);
+    }
+
+    const up = stepUp.copy(UP).applyQuaternion(rotation);
+    const lift = downforce(this.signedSpeed);
+    if (lift > 0) {
+      this.pushDown(forward, up, this.wheelAnchors[0].z, lift * DOWNFORCE_FRONT_SHARE);
+      this.pushDown(forward, up, this.wheelAnchors[2].z, lift * (1 - DOWNFORCE_FRONT_SHARE));
+    }
+
+    if (contacts > 0) {
+      const spin = scratchSpin.copy(car.angvel());
+      const roll = stepAxis.copy(up).cross(UP).dot(forward);
+      const rollTorque = ROLL_STIFFNESS * roll - ROLL_DAMPING * spin.dot(forward);
+      car.addTorque(stepForce.copy(forward).multiplyScalar(rollTorque), wake);
+
+      const side = stepSide.copy(RIGHT).applyQuaternion(rotation);
+      const assist = driftAssistShare(velocity.dot(side), this.signedSpeed, this.speed);
+      if (assist > 0) {
+        const yawTorque = -DRIFT_ASSIST_DAMPING * assist * spin.dot(up);
+        car.addTorque(stepForce.copy(up).multiplyScalar(yawTorque), wake);
+      }
+    }
+  }
+
+  /** Applies `force` newtons along the body's down axis at the axle `axleZ` metres along forward. */
+  private pushDown(forward: Vector3, up: Vector3, axleZ: number, force: number) {
+    stepPoint.copy(forward).multiplyScalar(axleZ).add(this.car.translation());
+    this.car.addForceAtPoint(stepForce.copy(up).multiplyScalar(-force), stepPoint, this.driving);
   }
 
   private walk(input: Intent) {
