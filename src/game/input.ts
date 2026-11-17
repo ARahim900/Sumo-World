@@ -2,6 +2,8 @@ import { neutral, type Intent } from './content';
 export class Input {
   keys = new Set<string>(); edges = new Set<string>(); yawDelta = 0; pitchDelta = 0;
   gamepadButtons = new Set<number>();
+  /** Reused every frame; read() overwrites every field. */
+  private readonly intent = neutral();
   constructor(private element: HTMLElement, private pause: () => void) {
     window.addEventListener('keydown', this.down); window.addEventListener('keyup', this.up); window.addEventListener('blur', this.blur);
     document.addEventListener('visibilitychange', this.visibility); document.addEventListener('pointerlockchange', this.lockChange);
@@ -17,7 +19,7 @@ export class Input {
   take(code: string) { const result = this.edges.has(code); this.edges.delete(code); return result; }
   held(...codes: string[]) { return codes.some(c => this.keys.has(c)); }
   read(): Intent {
-    const i = neutral(); i.throttle = +this.held('KeyW', 'ArrowUp'); i.brake = +this.held('KeyS', 'ArrowDown'); i.steer = +this.held('KeyA', 'ArrowLeft') - +this.held('KeyD', 'ArrowRight');
+    const i = this.intent; i.throttle = +this.held('KeyW', 'ArrowUp'); i.brake = +this.held('KeyS', 'ArrowDown'); i.steer = +this.held('KeyA', 'ArrowLeft') - +this.held('KeyD', 'ArrowRight');
     i.moveX = +this.held('KeyA', 'ArrowLeft') - +this.held('KeyD', 'ArrowRight'); i.moveZ = i.throttle - i.brake;
     i.sprint = this.held('ShiftLeft', 'ShiftRight'); i.handbrake = this.held('Space'); i.jump = this.take('Space');
     const pads = navigator.getGamepads?.() ?? []; const pad = Array.from(pads).find(p => p?.connected && p.mapping === 'standard');
