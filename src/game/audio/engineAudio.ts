@@ -131,6 +131,14 @@ export class EngineAudio implements GameSystem {
     return this.enabled;
   }
 
+  /**
+   * The running audio context while sound is on, for other synthesised sounds such as thunder.
+   * Undefined while sound is off, so those sounds follow the same setting.
+   */
+  get context(): AudioContext | undefined {
+    return this.enabled ? this.graph?.context : undefined;
+  }
+
   resume(): void {
     void this.graph?.context.resume();
   }

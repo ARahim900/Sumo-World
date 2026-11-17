@@ -6,9 +6,10 @@ import { Input } from '../input';
 import { Simulation } from '../physics';
 import { AdaptiveResolution, DEFAULT_QUALITY, qualitySettings } from '../render/quality';
 import { SceneRenderer } from '../render/renderer';
-import { createCar } from '../vehicle/carModel';
+import { createCar, type SumoCar } from '../vehicle/carModel';
 import { IDLE_RPM } from '../vehicle/drivetrain';
 import { RainSystem } from '../weather/rain';
+import { ThunderAudio } from '../weather/thunder';
 import { SprayVfx } from '../weather/vfx';
 import { WeatherSystem, toggledRainKind } from '../weather/weather';
 import { CitySystem } from '../world/city';
@@ -16,7 +17,6 @@ import { PeopleSystem } from '../world/people';
 import { CameraRig, type CameraObstruction } from './camera';
 import { disposeTree } from './dispose';
 import type {
-  CarVisual,
   CarVisualState,
   DebugInfo,
   FrameContext,
@@ -58,10 +58,13 @@ export class Runtime implements RuntimeApi {
   private readonly view: SceneRenderer;
   private readonly input: Input;
   private readonly rig: CameraRig;
-  private readonly car: CarVisual = createCar();
+  private readonly car: SumoCar = createCar({ preset: DEFAULT_QUALITY });
   private readonly weather = new WeatherSystem();
   private readonly audio = new EngineAudio();
-  private readonly adaptive = new AdaptiveResolution();
+  private readonly thunder = new ThunderAudio(() => this.audio.context);
+  // Off until the UI offers a toggle: on refresh-capped displays each trial briefly drops to
+  // the resolution floor even though the GPU is idle.
+  private readonly adaptive = new AdaptiveResolution({ enabled: false });
   private readonly systems: GameSystem[];
   private readonly resizeObserver: ResizeObserver;
   private quality: QualitySettings = qualitySettings(DEFAULT_QUALITY);
@@ -107,7 +110,7 @@ export class Runtime implements RuntimeApi {
     createWheelState(),
   ];
   private readonly frame: Mutable<FrameContext>;
-  private readonly carState: CarVisualState;
+  private readonly carState: Mutable<CarVisualState>;
 
   constructor(
     private readonly host: HTMLElement,
@@ -145,7 +148,14 @@ export class Runtime implements RuntimeApi {
       quality: this.quality,
       lowMotion: false,
     };
-    this.carState = { pose: this.frame.car, wheels: this.wheels, telemetry: this.telemetry };
+    this.carState = {
+      pose: this.frame.car,
+      wheels: this.wheels,
+      telemetry: this.telemetry,
+      dt: 0,
+      lowMotion: false,
+    };
+    this.weather.onThunder = event => this.thunder.play(event);
 
     this.input = new Input(this.view.domElement, () => this.pause());
     this.resizeObserver = new ResizeObserver(this.resize);
@@ -228,6 +238,7 @@ export class Runtime implements RuntimeApi {
     this.adaptive.reset();
     this.resolutionScale = 1;
     this.view.applyQuality(this.quality);
+    this.car.applyQuality(preset);
     this.emit();
   }
 
@@ -332,10 +343,12 @@ export class Runtime implements RuntimeApi {
       }
 
       const alpha = this.paused ? 1 : this.accumulator / STEP;
+      const systemDt = this.paused ? 0 : dt;
       this.updateFrame(alpha);
+      this.carState.dt = systemDt;
+      this.carState.lowMotion = this.lowMotion;
       this.car.update(this.carState);
 
-      const systemDt = this.paused ? 0 : dt;
       for (const system of this.systems) system.update(systemDt, this.frame);
       this.view.update(this.frame);
       if (!this.paused) {
@@ -347,7 +360,7 @@ export class Runtime implements RuntimeApi {
       this.fps = 1 / dt;
       this.hudTime += dt;
       if (this.hudTime > HUD_INTERVAL) {
-        this.emit(this.fps);
+        this.emit();
         this.hudTime = 0;
       }
       this.frameHandle = requestAnimationFrame(this.loop);
@@ -399,7 +412,7 @@ export class Runtime implements RuntimeApi {
     this.previousRotation.copy(this.sim.car.rotation());
   }
 
-  private emit(fps = 0): void {
+  private emit(): void {
     if (!this.sim) return;
     const sim = this.sim;
     const p = sim.driving ? sim.car.translation() : sim.player.translation();
@@ -426,7 +439,7 @@ export class Runtime implements RuntimeApi {
       rain: this.weather.state.rainDensity > 0,
       sound: this.audio.enabled,
       firstPerson: this.firstPerson,
-      fps,
+      fps: this.fps,
       quality: this.quality.preset,
       weather: this.weather.state.kind,
       weatherSetting: this.weather.setting,

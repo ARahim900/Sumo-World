@@ -126,6 +126,10 @@ export interface CarVisualState {
   pose: Pose;
   wheels: readonly WheelState[];
   telemetry: VehicleTelemetry;
+  /** Simulation seconds since the previous update; 0 while paused. */
+  dt: number;
+  /** Accessibility: suppress body lean and other cosmetic motion. */
+  lowMotion: boolean;
 }
 
 /** Contract between the runtime and the vehicle team's car model. */
@@ -207,6 +211,10 @@ export interface DebugInfo {
   geometries: number;
   textures: number;
   programs: number;
+  /** Renderer pixel ratio in use, after the preset cap and adaptive scale. */
+  pixelRatio: number;
+  /** Adaptive-resolution multiplier, 1 when rendering at the preset's full resolution. */
+  resolutionScale: number;
 }
 
 /** State the React HUD renders. Published roughly ten times a second. */

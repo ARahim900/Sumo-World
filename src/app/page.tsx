@@ -184,6 +184,16 @@ export default function Page() {
     saveSettings(browserStorage(), next);
   };
 
+  /** Web Audio can be missing or blocked; the game stays playable without sound. */
+  const flipSound = (game: Runtime): boolean => {
+    try {
+      game.toggleSound();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const play = () => {
     const game = runtime.current;
     if (!game) return;
@@ -191,7 +201,7 @@ export default function Page() {
     game.start();
     // Browsers only allow audio to start from a user gesture, so a saved "sound on" is
     // restored here rather than when the city finishes loading.
-    if (settings?.sound && !state.sound) game.toggleSound();
+    if (settings?.sound && !state.sound) flipSound(game);
   };
 
   const changeQuality = (preset: QualityPreset) => {
@@ -210,8 +220,8 @@ export default function Page() {
   };
 
   const toggleSound = () => {
-    runtime.current?.toggleSound();
-    remember({ sound: !state.sound });
+    const game = runtime.current;
+    if (game && flipSound(game)) remember({ sound: !state.sound });
   };
 
   const showMenu = !started || state.paused || Boolean(error);

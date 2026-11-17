@@ -31,6 +31,7 @@ export function DebugOverlay({ api, state }: { api: RuntimeApi | null; state: Sn
   const rows: ReadonlyArray<[string, string]> = [
     ['FPS', info ? String(Math.round(info.fps)) : '—'],
     ...COUNTERS.map(([key, label]): [string, string] => [label, counter(key)]),
+    ['Pixel ratio', info ? `${info.pixelRatio.toFixed(2)} (${Math.round(info.resolutionScale * 100)}%)` : '—'],
     ['Quality', qualityLabel(state.quality)],
     ['Weather', `${weatherLabel(state.weather)}${auto}`],
     ['Position', `${state.x.toFixed(1)}, ${state.z.toFixed(1)}`],

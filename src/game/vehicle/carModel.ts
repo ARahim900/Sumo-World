@@ -27,7 +27,7 @@ const LOD_DISTANCE = 32;
 const LOD_HYSTERESIS = 0.1;
 /** Body lean pivots about a point near the axle line rather than the chassis origin. */
 const LEAN_PIVOT_Y = -0.45;
-/** Longest frame step fed to the lean filter, so a stalled tab does not jolt the body. */
+/** Longest frame step fed to the lean filter, so a long frame does not jolt the body. */
 const MAX_LEAN_STEP = 0.1;
 
 export interface CreateCarOptions {
@@ -80,7 +80,6 @@ class SumoGt implements SumoCar {
   private fallback: ProceduralCar | null;
   private pendingWheels: PendingWheels | null = null;
   private lightsOn = true;
-  private lastUpdate = 0;
 
   constructor(url: string, preset: QualityPreset) {
     this.group.name = 'sumo-gt';
@@ -123,12 +122,10 @@ class SumoGt implements SumoCar {
     this.group.position.copy(state.pose.position);
     this.group.quaternion.copy(state.pose.quaternion);
 
-    const now = performance.now();
-    const dt = this.lastUpdate ? Math.min((now - this.lastUpdate) / 1000, MAX_LEAN_STEP) : 0;
-    this.lastUpdate = now;
     const steering = state.wheels.length > 0 ? state.wheels[0].steering : 0;
-    stepBodyLean(this.bodyLean, state.telemetry.signedSpeed, steering, dt);
-    this.lean.rotation.set(this.bodyLean.pitch, 0, this.bodyLean.roll);
+    stepBodyLean(this.bodyLean, state.telemetry.signedSpeed, steering, Math.min(state.dt, MAX_LEAN_STEP));
+    if (state.lowMotion) this.lean.rotation.set(0, 0, 0);
+    else this.lean.rotation.set(this.bodyLean.pitch, 0, this.bodyLean.roll);
 
     if (this.pendingWheels && state.wheels.length === this.slots.length) {
       this.bindWheels(state, this.pendingWheels);

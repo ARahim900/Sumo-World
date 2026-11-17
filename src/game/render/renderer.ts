@@ -56,6 +56,7 @@ export class SceneRenderer {
   private readonly moon: MoonLight;
   private quality: QualitySettings;
   private pixelRatio = 1;
+  private resolutionScale = 1;
   private width = 0;
   private height = 0;
 
@@ -124,6 +125,7 @@ export class SceneRenderer {
   /** Applies a preset; `scale` is the adaptive-resolution multiplier (1 = full). */
   applyQuality(quality: QualitySettings, scale = 1): void {
     this.quality = quality;
+    this.resolutionScale = scale;
     const tuning = renderTuning(quality.preset);
     this.pixelRatio = pixelRatioFor(window.devicePixelRatio, quality, scale);
     this.renderer.setPixelRatio(this.pixelRatio);
@@ -187,6 +189,8 @@ export class SceneRenderer {
       geometries: memory.geometries,
       textures: memory.textures,
       programs: programs?.length ?? 0,
+      pixelRatio: this.pixelRatio,
+      resolutionScale: this.resolutionScale,
     };
   }
 
