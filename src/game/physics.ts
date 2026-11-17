@@ -46,21 +46,27 @@ const FORWARD = new Vector3(0, 0, 1);
 const RIGHT = new Vector3(-1, 0, 0);
 
 const scratchMove = new Vector3();
-const scratchVelocity = new Vector3();
-const scratchForward = new Vector3();
-const scratchSide = new Vector3();
-const scratchOffset = new Vector3();
-const scratchSpin = new Vector3();
 const scratchRotation = new Quaternion();
-const scratchSteer = new Quaternion();
+
+const slipOffset = new Vector3();
+const slipHub = new Vector3();
+const slipHeading = new Vector3();
+const slipSide = new Vector3();
+const slipSteer = new Quaternion();
+
+const readRotation = new Quaternion();
+const readVelocity = new Vector3();
+const readSpin = new Vector3();
 
 const stepRotation = new Quaternion();
 const stepVelocity = new Vector3();
+const stepSpin = new Vector3();
 const stepForward = new Vector3();
 const stepUp = new Vector3();
 const stepAxis = new Vector3();
 const stepForce = new Vector3();
 const stepPoint = new Vector3();
+const stepCentre = new Vector3();
 const stepSide = new Vector3();
 
 export class Simulation {
@@ -100,6 +106,8 @@ export class Simulation {
   private demand = 0;
   private reverseSelected = false;
   private readonly slips: WheelQuad = [0, 0, 0, 0];
+  private readonly rayFilter = (collider: RAPIER.Collider) =>
+    collider.parent()?.handle !== this.car.handle && collider.handle !== this.capsule.handle;
 
   static async create() {
     await RAPIER.init();
@@ -286,10 +294,11 @@ export class Simulation {
 
     const rotation = stepRotation.copy(this.car.rotation());
     const velocity = stepVelocity.copy(this.car.linvel());
+    const spin = stepSpin.copy(this.car.angvel());
     const forward = stepForward.copy(FORWARD).applyQuaternion(rotation);
     this.signedSpeed = velocity.dot(forward);
     this.speed = Math.hypot(velocity.x, velocity.z);
-    for (let i = 0; i < 4; i++) this.slips[i] = this.wheelSlip(i);
+    for (let i = 0; i < 4; i++) this.slips[i] = this.slipAt(i, rotation, velocity, spin);
 
     const targetSteer = (this.driving ? input.steer : 0) * Math.max(0.16, 0.48 - this.speed * 0.009);
     this.steering += (targetSteer - this.steering) * (1 - Math.exp(-5 * STEP));
@@ -309,14 +318,9 @@ export class Simulation {
       reverse: this.reverseSelected,
     });
     this.applyWheelForces(this.driving ? driveForce : 0, servicePedal);
-    this.applyBodyForces(rotation, velocity, forward);
+    this.applyBodyForces(rotation, velocity, spin, forward);
 
-    this.vehicle.updateVehicle(
-      STEP,
-      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      undefined,
-      collider => collider.parent()?.handle !== this.car.handle && collider.handle !== this.capsule.handle,
-    );
+    this.vehicle.updateVehicle(STEP, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, undefined, this.rayFilter);
     this.world.step();
 
     const p = this.car.translation();
@@ -345,19 +349,10 @@ export class Simulation {
     if (point) out.contactPoint.copy(point);
   }
 
-  /**
-   * Tangent of the wheel's slip angle: lateral over longitudinal velocity at the hub, with a
-   * 1 m/s floor so a stationary car does not report huge slip from numerical jitter.
-   */
+  /** Tangent of the wheel's slip angle for the car's current state; see `slipAt`. */
   wheelSlip(index: number) {
-    const rotation = scratchRotation.copy(this.car.rotation());
-    const offset = scratchOffset.copy(this.wheelAnchors[index]).applyQuaternion(rotation);
-    const spin = scratchSpin.copy(this.car.angvel()).cross(offset);
-    const hubVelocity = scratchVelocity.copy(this.car.linvel()).add(spin);
-    const steer = scratchSteer.setFromAxisAngle(UP, index < 2 ? this.steering : 0);
-    const heading = scratchForward.copy(FORWARD).applyQuaternion(steer).applyQuaternion(rotation);
-    const side = scratchSide.copy(RIGHT).applyQuaternion(steer).applyQuaternion(rotation);
-    return Math.abs(hubVelocity.dot(side)) / Math.max(1, Math.abs(hubVelocity.dot(heading)));
+    this.readBodyMotion();
+    return this.slipAt(index, readRotation, readVelocity, readSpin);
   }
 
   /** Fills `out` from the simulated car, including rpm and gear from the powertrain. */
@@ -369,11 +364,32 @@ export class Simulation {
     out.throttle = this.throttle;
     out.brake = this.brake;
     out.handbrake = this.handbrake;
-    for (let i = 0; i < 4; i++) out.slip[i] = this.wheelSlip(i);
+    this.readBodyMotion();
+    for (let i = 0; i < 4; i++) out.slip[i] = this.slipAt(i, readRotation, readVelocity, readSpin);
   }
 
   dispose() {
     this.world.free();
+  }
+
+  /** Copies the body's rotation, linear and angular velocity into the read scratch objects. */
+  private readBodyMotion() {
+    readRotation.copy(this.car.rotation());
+    readVelocity.copy(this.car.linvel());
+    readSpin.copy(this.car.angvel());
+  }
+
+  /**
+   * Tangent of the wheel's slip angle: lateral over longitudinal velocity at the hub, with a
+   * 1 m/s floor so a stationary car does not report huge slip from numerical jitter.
+   */
+  private slipAt(index: number, rotation: Quaternion, velocity: Vector3, spin: Vector3) {
+    const offset = slipOffset.copy(this.wheelAnchors[index]).applyQuaternion(rotation);
+    const hubVelocity = slipHub.copy(spin).cross(offset).add(velocity);
+    const steer = slipSteer.setFromAxisAngle(UP, index < 2 ? this.steering : 0);
+    const heading = slipHeading.copy(FORWARD).applyQuaternion(steer).applyQuaternion(rotation);
+    const side = slipSide.copy(RIGHT).applyQuaternion(steer).applyQuaternion(rotation);
+    return Math.abs(hubVelocity.dot(side)) / Math.max(1, Math.abs(hubVelocity.dot(heading)));
   }
 
   /**
@@ -447,7 +463,7 @@ export class Simulation {
   }
 
   /** Drag, rolling resistance, downforce, counter-roll torque and drift assist on the body. */
-  private applyBodyForces(rotation: Quaternion, velocity: Vector3, forward: Vector3) {
+  private applyBodyForces(rotation: Quaternion, velocity: Vector3, spin: Vector3, forward: Vector3) {
     const car = this.car;
     const wake = this.driving;
     car.resetForces(false);
@@ -466,12 +482,12 @@ export class Simulation {
     const up = stepUp.copy(UP).applyQuaternion(rotation);
     const lift = downforce(this.signedSpeed);
     if (lift > 0) {
-      this.pushDown(forward, up, this.wheelAnchors[0].z, lift * DOWNFORCE_FRONT_SHARE);
-      this.pushDown(forward, up, this.wheelAnchors[2].z, lift * (1 - DOWNFORCE_FRONT_SHARE));
+      const centre = stepCentre.copy(car.translation());
+      this.pushDown(centre, forward, up, this.wheelAnchors[0].z, lift * DOWNFORCE_FRONT_SHARE);
+      this.pushDown(centre, forward, up, this.wheelAnchors[2].z, lift * (1 - DOWNFORCE_FRONT_SHARE));
     }
 
     if (contacts > 0) {
-      const spin = scratchSpin.copy(car.angvel());
       const roll = stepAxis.copy(up).cross(UP).dot(forward);
       const rollTorque = ROLL_STIFFNESS * roll - ROLL_DAMPING * spin.dot(forward);
       car.addTorque(stepForce.copy(forward).multiplyScalar(rollTorque), wake);
@@ -486,8 +502,8 @@ export class Simulation {
   }
 
   /** Applies `force` newtons along the body's down axis at the axle `axleZ` metres along forward. */
-  private pushDown(forward: Vector3, up: Vector3, axleZ: number, force: number) {
-    stepPoint.copy(forward).multiplyScalar(axleZ).add(this.car.translation());
+  private pushDown(centre: Vector3, forward: Vector3, up: Vector3, axleZ: number, force: number) {
+    stepPoint.copy(forward).multiplyScalar(axleZ).add(centre);
     this.car.addForceAtPoint(stepForce.copy(up).multiplyScalar(-force), stepPoint, this.driving);
   }
 
