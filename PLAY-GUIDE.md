@@ -21,7 +21,9 @@ Open http://127.0.0.1:3000 while the local server is running, or double-click `L
 | R | Recover at the starting garage |
 | Escape | Pause; resume through the menu |
 
-The pause menu provides rain and synthesised engine-audio toggles, recovery and mission restart. Losing window focus pauses the simulation and clears held controls.
+The start and pause menus share a settings panel: **Quality** (Low, Medium, High, Ultra), **Weather** (Auto, Clear, Drizzle, Storm, Fog), **Low motion** and **Engine audio**. Choices are saved in the browser and restored on the next visit; engine audio is restored when you press **Enter Sumo World**, because browsers only start sound after a click. The pause menu also offers recovery and mission restart. Losing window focus pauses the simulation and clears held controls.
+
+While driving, the HUD shows speed, a rev counter with redline, the current gear (R, N, 1) and the weather. Add `?debug` to the address for frame rate and renderer counters. Phones and tablets without a mouse see a desktop-only notice; touch controls are not implemented.
 
 Standard gamepad bindings: left stick move/steer, right stick look, right trigger accelerate, left trigger brake/reverse, west face button enter/exit, south jump, east handbrake, left-stick click sprint, right-stick click walking camera, menu pause. Keyboard/browser workflow was verified; a physical controller was not available for device testing.
 
@@ -48,4 +50,4 @@ The first prototype uses a direct Three.js renderer inside a Next.js/React shell
 - Rapier's bundled WASM loader emits a deprecation warning during initialisation; it did not prevent the tests or browser workflow.
 - Local self-review addressed quaternion interpolation, held-brake reverse behaviour, input clearing and collision/mission guards. No external CodeRabbit review was sent.
 
-Developer commands: `npm run dev`, `npm run check`, `npm test`, `npm run build`, `npm start`. Exact dependencies are locked in `package-lock.json`.
+Developer commands: `npm run dev`, `npm run check`, `npm test`, `npm run build`, `npm start`, `npm run test:e2e` (after a build). Exact dependencies are locked in `package-lock.json`. See README.md for architecture, deployment and CI.
