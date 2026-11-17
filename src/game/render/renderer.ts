@@ -165,6 +165,7 @@ export class SceneRenderer {
 
     const strength = reflectionStrengthFor(weather);
     this.reflections.strength = strength;
+    this.reflections.fogDensity = weather.fogDensity;
     this.reflections.enabled = this.quality.ssr && strength > MIN_REFLECTION_STRENGTH;
 
     this.moon.follow(frame.focus);

@@ -95,11 +95,81 @@ export class ScenePass extends Pass {
   }
 }
 
-/** GTAO computed at a fraction of the render size and upsampled when blended. */
+const AO_UPSAMPLE_FRAGMENT = /* glsl */ `
+  #include <packing>
+  uniform float intensity;
+  uniform sampler2D tDiffuse;
+  uniform sampler2D tDepth;
+  uniform vec2 aoSize;
+  uniform float cameraNear;
+  uniform float cameraFar;
+  varying vec2 vUv;
+
+  float viewDepth(vec2 uv) {
+    return -perspectiveDepthToViewZ(texture2D(tDepth, uv).x, cameraNear, cameraFar);
+  }
+
+  void main() {
+    float centre = viewDepth(vUv);
+    vec2 texel = vUv * aoSize - 0.5;
+    vec2 base = floor(texel);
+    vec2 f = texel - base;
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    for (int y = 0; y < 2; y++) {
+      for (int x = 0; x < 2; x++) {
+        vec2 corner = vec2(float(x), float(y));
+        vec2 uv = (base + corner + 0.5) / aoSize;
+        vec2 bilinear = mix(1.0 - f, f, corner);
+        float relative = abs(viewDepth(uv) - centre) / max(centre, 1e-3);
+        float weight = bilinear.x * bilinear.y / (0.01 + relative);
+        sum += texture2D(tDiffuse, uv) * weight;
+        total += weight;
+      }
+    }
+    vec4 ao = total > 1e-5 ? sum / total : texture2D(tDiffuse, vUv);
+    gl_FragColor = vec4(mix(vec3(1.0), ao.rgb, intensity), ao.a);
+  }
+`;
+
+/**
+ * GTAO computed at a fraction of the render size. The stock blend upsamples bilinearly, which
+ * bleeds occlusion across silhouettes (dark halos around the car against the sky); this blend
+ * weights the four nearest AO texels by how close their full-resolution depth is to the pixel's.
+ */
 export class ScaledGTAOPass extends GTAOPass {
   private resolutionScale = 1;
   private fullWidth = 1;
   private fullHeight = 1;
+
+  constructor(
+    scene: T.Scene,
+    private readonly viewCamera: T.PerspectiveCamera,
+  ) {
+    super(scene, viewCamera);
+    const blend = this.blendMaterial;
+    blend.uniforms.tDepth = { value: null };
+    blend.uniforms.aoSize = { value: new T.Vector2(1, 1) };
+    blend.uniforms.cameraNear = { value: viewCamera.near };
+    blend.uniforms.cameraFar = { value: viewCamera.far };
+    blend.fragmentShader = AO_UPSAMPLE_FRAGMENT;
+    blend.needsUpdate = true;
+  }
+
+  render(
+    renderer: T.WebGLRenderer,
+    writeBuffer: T.WebGLRenderTarget,
+    readBuffer: T.WebGLRenderTarget,
+    deltaTime: number,
+    maskActive: boolean,
+  ): void {
+    const uniforms = this.blendMaterial.uniforms;
+    uniforms.tDepth.value = this.depthTexture;
+    uniforms.aoSize.value.set(this.width, this.height);
+    uniforms.cameraNear.value = this.viewCamera.near;
+    uniforms.cameraFar.value = this.viewCamera.far;
+    super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
+  }
 
   setResolutionScale(scale: number): void {
     if (scale === this.resolutionScale) return;
@@ -145,7 +215,7 @@ const WET_REFLECTION_FRAGMENT = /* glsl */ `
   uniform mat4 cameraView;
   uniform float cameraNear;
   uniform float strength;
-  uniform float frame;
+  uniform float fogDensity;
   varying vec2 vUv;
 
   ${NOISE_GLSL}
@@ -195,7 +265,10 @@ const WET_REFLECTION_FRAGMENT = /* glsl */ `
 
     vec3 worldPosition = (cameraWorld * vec4(viewPosition, 1.0)).xyz;
     float puddle = smoothstep(0.45, 0.75, valueNoise(worldPosition.xz * 0.12));
-    float wet = strength * floorMask * mix(0.45, 1.0, puddle);
+    // The floor pixel is already fogged; the reflection must fade with it (FogExp2, view depth).
+    float fogDepth = fogDensity * viewPosition.z;
+    float wet = strength * floorMask * mix(0.45, 1.0, puddle) * exp(-fogDepth * fogDepth);
+    if (wet <= 0.001) return;
 
     vec3 viewUp = normalize(mat3(cameraView) * vec3(0.0, 1.0, 0.0));
     vec3 incident = normalize(viewPosition);
@@ -203,7 +276,8 @@ const WET_REFLECTION_FRAGMENT = /* glsl */ `
     float cosTheta = clamp(dot(-incident, viewUp), 0.0, 1.0);
     float fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
 
-    float stepLength = FIRST_STEP * (0.75 + 0.5 * interleavedGradientNoise(gl_FragCoord.xy + frame));
+    // Fixed per-pixel jitter: there is no temporal accumulation, so a per-frame offset would shimmer.
+    float stepLength = FIRST_STEP * (0.75 + 0.5 * interleavedGradientNoise(gl_FragCoord.xy));
     float travelled = 0.0;
     float previous = 0.0;
     bool hit = false;
@@ -259,7 +333,7 @@ export class WetReflectionPass extends Pass {
     cameraView: { value: new T.Matrix4() },
     cameraNear: { value: 0.1 },
     strength: { value: 0 },
-    frame: { value: 0 },
+    fogDensity: { value: 0 },
   };
   private readonly material: T.ShaderMaterial;
   private readonly quad: FullScreenQuad;
@@ -286,6 +360,11 @@ export class WetReflectionPass extends Pass {
     this.uniforms.strength.value = value;
   }
 
+  /** FogExp2 density of the scene, so reflections fade with the fog over the floor. */
+  set fogDensity(value: number) {
+    this.uniforms.fogDensity.value = value;
+  }
+
   /** Changes the march length; recompiles only when the count changes. */
   setSteps(steps: number): void {
     const count = Math.max(1, Math.round(steps));
@@ -308,7 +387,6 @@ export class WetReflectionPass extends Pass {
     uniforms.cameraWorld.value.copy(this.camera.matrixWorld);
     uniforms.cameraView.value.copy(this.camera.matrixWorldInverse);
     uniforms.cameraNear.value = this.camera.near;
-    uniforms.frame.value = (uniforms.frame.value + 1) % 64;
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     this.quad.render(renderer);
   }
@@ -340,13 +418,17 @@ const GRADE_FRAGMENT = /* glsl */ `
     colour += shadowTint * (1.0 - smoothstep(0.0, 0.45, luma));
     colour += highlightTint * smoothstep(0.55, 1.0, luma);
     colour = (colour - 0.4) * contrast + 0.4;
-    vec2 offset = (vUv - 0.5) * vec2(aspect, 1.0);
+    // Vertical distance is damped because the HUD's CSS scrim already darkens top and bottom.
+    vec2 offset = (vUv - 0.5) * vec2(aspect, VIGNETTE_VERTICAL);
     colour *= 1.0 - vignette * smoothstep(0.4, 1.1, length(offset));
     // Half-LSB dither hides banding in the dark fog gradients.
     colour += (interleavedGradientNoise(gl_FragCoord.xy + frame) - 0.5) / 255.0;
     gl_FragColor = vec4(clamp(colour, 0.0, 1.0), texel.a);
   }
 `;
+
+/** Share of the vertical offset that counts towards the vignette. */
+const VIGNETTE_VERTICAL = 0.5;
 
 /** Display-referred colour grade, vignette and dither. Runs after OutputPass. */
 export class GradePass extends Pass {
@@ -369,6 +451,7 @@ export class GradePass extends Pass {
       uniforms: this.uniforms,
       vertexShader: FULLSCREEN_VERTEX,
       fragmentShader: GRADE_FRAGMENT,
+      defines: { VIGNETTE_VERTICAL: VIGNETTE_VERTICAL.toFixed(2) },
       depthTest: false,
       depthWrite: false,
     });

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3 } from 'three';
-import { MOON_DIRECTION, snapToShadowTexel } from './lighting';
+import { moonDirection, snapToShadowTexel } from './lighting';
 import {
   BASE_ENVIRONMENT_INTENSITY,
   BASE_EXPOSURE,
@@ -56,6 +56,16 @@ test('march growth makes the geometric steps cover the requested distance', () =
   }
   assert.equal(marchGrowth(1, 0.2, 60), 1);
   assert.equal(marchGrowth(10, 10, 60), 1);
+});
+
+const MOON_DIRECTION = moonDirection(new Vector3());
+
+test('the moon direction is a unit vector handed out as a caller-owned copy', () => {
+  const direction = moonDirection(new Vector3());
+  assert.ok(Math.abs(direction.length() - 1) < 1e-12);
+  assert.ok(direction.y > 0, 'the moon is above the horizon');
+  direction.set(0, -1, 0);
+  assert.ok(moonDirection(new Vector3()).distanceTo(MOON_DIRECTION) < 1e-12);
 });
 
 test('shadow focus snapping stays within one texel and is stable inside a texel', () => {

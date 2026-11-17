@@ -1,6 +1,6 @@
 import * as T from 'three';
 import { disposeTree } from '../core/dispose';
-import { MOON_DIRECTION } from './lighting';
+import { moonDirection } from './lighting';
 
 const DOME_RADIUS = 80;
 const PANEL_COUNT = 30;
@@ -95,7 +95,7 @@ function createPanels(): T.Group {
 function createMoon(): T.Mesh {
   const colour = new T.Color('#bad6ff').multiplyScalar(8);
   const moon = new T.Mesh(new T.SphereGeometry(2.5, 16, 8), new T.MeshBasicMaterial({ color: colour }));
-  moon.position.copy(MOON_DIRECTION).multiplyScalar(DOME_RADIUS * 0.85);
+  moonDirection(moon.position).multiplyScalar(DOME_RADIUS * 0.85);
   return moon;
 }
 

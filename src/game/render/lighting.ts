@@ -1,8 +1,13 @@
 import * as T from 'three';
 import { BASE_MOON_INTENSITY } from './look';
 
-/** Unit vector from the lit point towards the moon. */
-export const MOON_DIRECTION: Readonly<T.Vector3> = new T.Vector3(-30, 60, 20).normalize();
+/** Unit vector from the lit point towards the moon. Frozen, so an accidental write throws. */
+const MOON_DIRECTION = Object.freeze(new T.Vector3(-30, 60, 20).normalize());
+
+/** Copies the unit vector from the lit point towards the moon into `out`. */
+export function moonDirection(out: T.Vector3): T.Vector3 {
+  return out.copy(MOON_DIRECTION);
+}
 
 const MOON_COLOUR = '#bad6ff';
 /** Distance from the shadow focus to the light; must clear the tallest tower (about 80 m). */
