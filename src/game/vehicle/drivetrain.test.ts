@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  Drivetrain,
   IDLE_RPM,
   Powertrain,
   REDLINE_RPM,
@@ -94,28 +93,4 @@ test('powertrain engine-brakes when coasting and limits top and reverse speed', 
   assert.ok(powertrain.step(STEP, { signedSpeed: 0, demand: 1, reverse: true }) < 0);
   assert.equal(powertrain.telemetryGear(-2, 1), -1);
   assert.equal(powertrain.step(STEP, { signedSpeed: -REVERSE_SPEED_LIMIT, demand: 1, reverse: true }), 0);
-});
-
-test('telemetry follower idles in neutral, selects drive or reverse and climbs the gears', () => {
-  const drivetrain = new Drivetrain();
-  drivetrain.update(0, 0);
-  assert.equal(drivetrain.gear, 0);
-  assert.equal(drivetrain.rpm, IDLE_RPM);
-  drivetrain.update(0, 1);
-  assert.equal(drivetrain.gear, 1);
-  drivetrain.update(-3, 0);
-  assert.equal(drivetrain.gear, -1);
-  assert.ok(drivetrain.rpm > IDLE_RPM);
-
-  drivetrain.reset();
-  let highest = 0;
-  for (let speed = 0; speed <= 60; speed += 0.2) {
-    drivetrain.update(speed, 1);
-    highest = Math.max(highest, drivetrain.gear);
-    assert.ok(drivetrain.rpm <= REDLINE_RPM);
-  }
-  assert.ok(highest >= 4);
-  drivetrain.reset();
-  assert.equal(drivetrain.gear, 0);
-  assert.equal(drivetrain.rpm, IDLE_RPM);
 });

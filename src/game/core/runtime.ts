@@ -7,7 +7,7 @@ import { Simulation } from '../physics';
 import { AdaptiveResolution, DEFAULT_QUALITY, qualitySettings } from '../render/quality';
 import { SceneRenderer } from '../render/renderer';
 import { createCar } from '../vehicle/carModel';
-import { Drivetrain, IDLE_RPM } from '../vehicle/drivetrain';
+import { IDLE_RPM } from '../vehicle/drivetrain';
 import { RainSystem } from '../weather/rain';
 import { SprayVfx } from '../weather/vfx';
 import { WeatherSystem, toggledRainKind } from '../weather/weather';
@@ -61,7 +61,6 @@ export class Runtime implements RuntimeApi {
   private readonly car: CarVisual = createCar();
   private readonly weather = new WeatherSystem();
   private readonly audio = new EngineAudio();
-  private readonly drivetrain = new Drivetrain();
   private readonly adaptive = new AdaptiveResolution();
   private readonly systems: GameSystem[];
   private readonly resizeObserver: ResizeObserver;
@@ -369,9 +368,6 @@ export class Runtime implements RuntimeApi {
     frame.focus.copy(sim.driving ? frame.car.position : frame.player.position);
 
     sim.readTelemetry(this.telemetry);
-    this.drivetrain.update(this.telemetry.signedSpeed, this.telemetry.throttle);
-    this.telemetry.rpm = this.drivetrain.rpm;
-    this.telemetry.gear = this.drivetrain.gear;
     for (let i = 0; i < this.wheels.length; i++) sim.readWheel(i, this.wheels[i]);
 
     frame.time = sim.time;
@@ -393,7 +389,6 @@ export class Runtime implements RuntimeApi {
 
   private afterRecover(): void {
     this.resetInterpolation();
-    this.drivetrain.reset();
     this.rig.resetYaw();
     this.start();
   }

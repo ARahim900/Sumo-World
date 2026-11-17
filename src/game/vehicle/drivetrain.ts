@@ -1,10 +1,8 @@
 /**
  * Engine and six-speed automatic gearbox for the rear-wheel-drive GT.
  *
- * `Powertrain` is the authoritative model: the simulation steps it at the fixed physics rate
- * and applies the drive force it returns to the rear wheels. `Drivetrain` is a lightweight
- * follower that derives rpm and gear from speed and throttle alone, for callers that only
- * have telemetry and no time step. Both share the same torque curve and shift schedule.
+ * `Powertrain` is the single model: the simulation steps it at the fixed physics rate, applies
+ * the drive force it returns to the rear wheels and publishes its rpm and gear as telemetry.
  */
 
 export const IDLE_RPM = 900;
@@ -221,34 +219,5 @@ export class Powertrain {
     this.shifted = false;
     this.sinceShift = SHIFT_INTERVAL;
     this.cut = 0;
-  }
-}
-
-/**
- * Telemetry follower: derives rpm and gear from speed and throttle each call, without a time
- * step, using the same shift schedule as `Powertrain`. It can lag the simulated gearbox by a
- * frame around a shift and does not model the shift interval.
- */
-export class Drivetrain {
-  rpm = IDLE_RPM;
-  gear = 0;
-  private forwardGear = 1;
-
-  update(signedSpeed: number, throttle: number): void {
-    if (signedSpeed < -MOVING_SPEED) {
-      this.forwardGear = 1;
-      this.gear = -1;
-      this.rpm = engineRpm(signedSpeed, -1, 0);
-      return;
-    }
-    this.forwardGear = selectGear(this.forwardGear, signedSpeed, throttle);
-    this.gear = displayGear(this.forwardGear, signedSpeed, throttle, false);
-    this.rpm = engineRpm(signedSpeed, this.forwardGear, throttle);
-  }
-
-  reset(): void {
-    this.rpm = IDLE_RPM;
-    this.gear = 0;
-    this.forwardGear = 1;
   }
 }
